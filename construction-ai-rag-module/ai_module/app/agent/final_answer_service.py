@@ -1,11 +1,11 @@
 from app.schemas import AgentFinalRequest, AgentFinalResponse, Display
+from .citation_validator import answer_with_citations, validate_answer
 from .prompt_builder import prefer_arabic
 
 
 class FinalAnswerService:
     async def final(self, request: AgentFinalRequest) -> AgentFinalResponse:
         arabic = prefer_arabic(request.message, request.locale)
-        sources = [chunk.source() for chunk in request.local_rag_results]
         has_db = bool(request.tool_results)
         has_rag = bool(request.local_rag_results)
         if has_db and has_rag:
@@ -20,14 +20,21 @@ class FinalAnswerService:
             display_type = "text"
 
         if has_db and has_rag:
-            answer = "النتيجة تعتمد على بيانات النظام والمستندات المتاحة." if arabic else "The answer uses system data and available documents."
+            base_answer = "النتيجة تعتمد على بيانات النظام والمستندات المتاحة." if arabic else "The answer uses system data and available documents."
+            answer = answer_with_citations(base_answer, request.local_rag_results)
         elif has_rag:
-            answer = ("حسب المستندات المتاحة: " if arabic else "Based on the available documents: ") + request.local_rag_results[0].text
+            prefix = "حسب المستندات المتاحة:" if arabic else "Based on the available documents:"
+            answer = answer_with_citations(prefix, request.local_rag_results)
         elif has_db:
             answer = self._summarize_tool_results(request, arabic)
         else:
             answer = "لا توجد نتائج كافية للإجابة." if arabic else "There is not enough evidence to answer."
-        return AgentFinalResponse(answer=answer, display=Display(type=display_type, data={"tool_results": [r.result for r in request.tool_results]}), sources=sources)
+
+        validation = validate_answer(answer, request.local_rag_results)
+        if has_rag and not validation.sources:
+            safe_answer = "لا توجد أدلة موثقة كافية للإجابة." if arabic else "There is not enough validated evidence to answer."
+            return AgentFinalResponse(answer=safe_answer, display=Display(type="text", data={"validation": "no_valid_citations"}), sources=[])
+        return AgentFinalResponse(answer=validation.answer, display=Display(type=display_type, data={"tool_results": [r.result for r in request.tool_results], "citations_valid": validation.valid}), sources=validation.sources)
 
     def _has_rows(self, request: AgentFinalRequest) -> bool:
         for result in request.tool_results:
