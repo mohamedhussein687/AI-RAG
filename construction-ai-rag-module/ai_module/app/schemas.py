@@ -192,8 +192,9 @@ class DocumentIndexRequest(StrictModel):
 
 class DocumentIndexResponse(StrictModel):
     document_id: str
-    status: Literal["indexed"]
-    chunks_indexed: int = Field(ge=1)
+    status: Literal["pending", "processing", "indexed", "failed"]
+    chunks_indexed: int = Field(ge=0)
+    job_id: str | None = None
 
 
 class RagFilters(StrictModel):

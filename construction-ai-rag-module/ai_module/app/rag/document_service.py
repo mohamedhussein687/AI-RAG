@@ -2,7 +2,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from app.config import Settings
 from app.schemas import DocumentIndexRequest, DocumentIndexResponse, RagChunk
@@ -61,8 +61,22 @@ class DocumentService:
             existing = await session.get(Document, doc_id)
             if existing and existing.status == "indexed":
                 count = (await session.execute(select(func.count(DocumentChunk.id)).where(DocumentChunk.document_id == doc_id))).scalar_one()
-                return DocumentIndexResponse(document_id=doc_id, status="indexed", chunks_indexed=count)
-            if not existing:
+                return DocumentIndexResponse(document_id=doc_id, status="indexed", chunks_indexed=count, job_id=job_id)
+            job = await session.get(IngestionJob, job_id)
+            if existing and job and job.status in {"pending", "processing"}:
+                count = (await session.execute(select(func.count(DocumentChunk.id)).where(DocumentChunk.document_id == doc_id))).scalar_one()
+                return DocumentIndexResponse(document_id=doc_id, status=job.status, chunks_indexed=count, job_id=job_id)
+            if existing and job and job.status == "failed":
+                vector_ids = (await session.execute(select(DocumentChunk.vector_id).where(DocumentChunk.document_id == doc_id))).scalars().all()
+                if vector_ids:
+                    await self.vector_store.delete(list(vector_ids))
+                await session.execute(delete(DocumentChunk).where(DocumentChunk.document_id == doc_id))
+                existing.status = "pending"
+                existing.error_message = None
+                job.status = "pending"
+                job.error_message = None
+                await session.commit()
+            elif not existing:
                 session.add(Document(
                     id=doc_id,
                     tenant_id=request.tenant_id,
@@ -76,8 +90,13 @@ class DocumentService:
                     metadata_json=request.metadata,
                     status="pending",
                 ))
-            session.add(IngestionJob(id=job_id, document_id=doc_id, status="pending"))
-            await session.commit()
+                session.add(IngestionJob(id=job_id, document_id=doc_id, status="pending"))
+                await session.commit()
+            elif not job:
+                session.add(IngestionJob(id=job_id, document_id=doc_id, status="pending"))
+                existing.status = "pending"
+                existing.error_message = None
+                await session.commit()
 
         async def work() -> int:
             vectors = await self.embedder.embed_batch(pieces)
@@ -125,19 +144,31 @@ class DocumentService:
                 ))
             async with session_factory() as session:
                 doc = await session.get(Document, doc_id)
-                if doc is None:
-                    raise RuntimeError("document disappeared during indexing")
+                job = await session.get(IngestionJob, job_id)
+                if doc is None or job is None:
+                    raise RuntimeError("document or ingestion job disappeared during indexing")
+                if job.status == "indexed":
+                    return (await session.execute(select(func.count(DocumentChunk.id)).where(DocumentChunk.document_id == doc_id))).scalar_one()
                 doc.status = "processing"
+                job.status = "processing"
+                await session.commit()
+            async with session_factory() as session:
+                old_vector_ids = (await session.execute(select(DocumentChunk.vector_id).where(DocumentChunk.document_id == doc_id))).scalars().all()
+                if old_vector_ids:
+                    await self.vector_store.delete(list(old_vector_ids))
+                await session.execute(delete(DocumentChunk).where(DocumentChunk.document_id == doc_id))
                 await session.commit()
             await self.vector_store.upsert_many(points)
             async with session_factory() as session:
                 doc = await session.get(Document, doc_id)
+                job = await session.get(IngestionJob, job_id)
                 session.add_all(db_chunks)
                 doc.status = "indexed"
                 doc.indexed_at = func.now()
-                job = await session.get(IngestionJob, job_id)
+                doc.error_message = None
                 if job:
                     job.status = "indexed"
+                    job.error_message = None
                 await session.commit()
             return len(db_chunks)
 
@@ -155,7 +186,7 @@ class DocumentService:
                     job.error_message = type(exc).__name__
                 await session.commit()
             raise
-        return DocumentIndexResponse(document_id=doc_id, status="indexed", chunks_indexed=indexed)
+        return DocumentIndexResponse(document_id=doc_id, status="indexed", chunks_indexed=indexed, job_id=job_id)
 
     async def _index_in_memory(self, request: DocumentIndexRequest) -> DocumentIndexResponse:
         pieces = self.chunker.split(request.content)
@@ -190,7 +221,7 @@ class DocumentService:
         documents[doc_id] = StoredDocument(id=doc_id, tenant_id=request.tenant_id, project_id=request.project_id, title=request.title, source_type=request.source_type, access_policy=request.access_policy.model_dump(), metadata=request.metadata, content_hash=content_hash)
         indexed = await self.ingestion.run_indexing_job(job_id, doc_id, work)
         documents[doc_id].status = "indexed"
-        return DocumentIndexResponse(document_id=doc_id, status="indexed", chunks_indexed=indexed)
+        return DocumentIndexResponse(document_id=doc_id, status="indexed", chunks_indexed=indexed, job_id=job_id)
 
 
 def stable_id(prefix: str, *parts: str) -> str:
