@@ -18,6 +18,9 @@ gateway:
   ai-token: ${AI_MODULE_TOKEN:}
   public-token: ${GATEWAY_PUBLIC_TOKEN:}
   timeout-ms: ${GATEWAY_TIMEOUT_MS:30000}
+  jwt-issuer: ${GATEWAY_JWT_ISSUER:}
+  jwt-jwk-set-uri: ${GATEWAY_JWT_JWK_SET_URI:}
+  jwt-audience: ${GATEWAY_JWT_AUDIENCE:}
 logging:
   pattern:
     console: '{"ts":"%d{yyyy-MM-dd HH:mm:ss.SSS}","level":"%level","logger":"%logger","msg":"%replace(%msg){''(?i)(bearer )[^ ]+'',''$1[REDACTED]''}"}%n'
