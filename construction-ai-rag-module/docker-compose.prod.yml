@@ -139,6 +139,7 @@ services:
     logging: *log-options
 
   ai-module-api:
+    image: construction-rag/ai-module:${RELEASE_SHA:?RELEASE_SHA is required}
     build:
       context: ./ai_module
     restart: unless-stopped
@@ -164,6 +165,7 @@ services:
     <<: *security
 
   ingestion-worker:
+    image: construction-rag/ingestion-worker:${RELEASE_SHA:?RELEASE_SHA is required}
     build:
       context: ./ai_module
     restart: unless-stopped
@@ -175,6 +177,7 @@ services:
     <<: *security
 
   spring-gateway:
+    image: construction-rag/spring-gateway:${RELEASE_SHA:?RELEASE_SHA is required}
     build:
       context: ../construction-gateway
     restart: unless-stopped
