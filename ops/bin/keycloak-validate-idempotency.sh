@@ -22,23 +22,29 @@ kc() {
 }
 
 safe_state() {
-  local api_id smoke_id scope_id context_scope_id
+  set +e +o pipefail
+  local api_id smoke_id scope_id context_scope_id realm_count audience_scope_count context_scope_count audience_mapper_count
   api_id="$(kc get clients -r techlab -q clientId=construction-rag-api --fields id --format csv --noquotes | head -n1)"
   smoke_id="$(kc get clients -r techlab -q clientId=construction-rag-smoke-client --fields id --format csv --noquotes | head -n1)"
   scope_id="$(kc get client-scopes -r techlab --fields id,name --format csv --noquotes | awk -F, '$2=="construction-rag-api-audience"{print $1; exit}')"
   context_scope_id="$(kc get client-scopes -r techlab --fields id,name --format csv --noquotes | awk -F, '$2=="construction-rag-context"{print $1; exit}')"
+  realm_count="$(kc get realms --fields realm --format csv --noquotes | awk '$1=="techlab"{c++} END{print c+0}')"
+  audience_scope_count="$(kc get client-scopes -r techlab --fields name --format csv --noquotes | awk '$1=="construction-rag-api-audience"{c++} END{print c+0}')"
+  context_scope_count="$(kc get client-scopes -r techlab --fields name --format csv --noquotes | awk '$1=="construction-rag-context"{c++} END{print c+0}')"
+  audience_mapper_count="$(kc get client-scopes/${scope_id}/protocol-mappers/models -r techlab --fields name --format csv --noquotes | awk '$1=="construction-rag-api-audience"{c++} END{print c+0}')"
   {
-    echo "realm_count=$(kc get realms --fields realm --format csv --noquotes | awk '$1==\"techlab\"{c++} END{print c+0}')"
+    echo "realm_count=${realm_count}"
     echo "api_client_count=$(kc get clients -r techlab -q clientId=construction-rag-api --fields id --format csv --noquotes | wc -l)"
     echo "smoke_client_count=$(kc get clients -r techlab -q clientId=construction-rag-smoke-client --fields id --format csv --noquotes | wc -l)"
-    echo "audience_scope_count=$(kc get client-scopes -r techlab --fields name --format csv --noquotes | awk '$1==\"construction-rag-api-audience\"{c++} END{print c+0}')"
-    echo "context_scope_count=$(kc get client-scopes -r techlab --fields name --format csv --noquotes | awk '$1==\"construction-rag-context\"{c++} END{print c+0}')"
-    echo "api_roles=$(kc get clients/${api_id}/roles -r techlab --fields name --format csv --noquotes | sort | grep -E '^(docs\\.admin|docs\\.view|policies\\.view|rag-user)$' | tr '\\n' ',' )"
-    echo "audience_mapper_count=$(kc get client-scopes/${scope_id}/protocol-mappers/models -r techlab --fields name --format csv --noquotes | awk '$1==\"construction-rag-api-audience\"{c++} END{print c+0}')"
+    echo "audience_scope_count=${audience_scope_count}"
+    echo "context_scope_count=${context_scope_count}"
+    echo "api_roles=$( (kc get clients/${api_id}/roles -r techlab --fields name --format csv --noquotes | sort | grep -E '^(docs\\.admin|docs\\.view|policies\\.view|rag-user)$' || true) | tr '\\n' ',' )"
+    echo "audience_mapper_count=${audience_mapper_count}"
     echo "context_mapper_names=$(kc get client-scopes/${context_scope_id}/protocol-mappers/models -r techlab --fields name --format csv --noquotes | sort | tr '\\n' ',' )"
     echo "smoke_mapper_names=$(kc get clients/${smoke_id}/protocol-mappers/models -r techlab --fields name --format csv --noquotes | sort | tr '\\n' ',' )"
-    echo "realm_public_key_ids=$(kc get keys -r techlab | jq -r '.keys[] | select(.type==\"RSA\" and .providerId==\"rsa-generated\") | .kid' | sort | tr '\\n' ',' )"
+    echo "realm_public_key_ids=$(curl -fsS https://modelauth.techlabeg.com/realms/techlab/protocol/openid-connect/certs | jq -r '.keys[] | select(.kty=="RSA") | .kid' | sort | tr '\\n' ',' )"
   } | sed 's/[[:space:]]*$//'
+  set -e -o pipefail
 }
 
 secret_hash() {

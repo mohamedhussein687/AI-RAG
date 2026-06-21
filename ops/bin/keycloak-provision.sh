@@ -88,6 +88,7 @@ fi
 for spec in "tenant_id:false" "project_ids:true" "roles:true" "permissions:true"; do
   claim="${spec%%:*}"
   multi="${spec##*:}"
+  step "context mapper ${claim}"
   mapper_id="$(mapper_id_by_name "client-scopes/${context_scope_id}" "$claim" || true)"
   if [[ -z "$mapper_id" ]]; then
     kc create "client-scopes/${context_scope_id}/protocol-mappers/models" -r techlab \
@@ -115,6 +116,7 @@ remove_default_scope "$smoke_id" "$context_scope_id"
 
 create_smoke_mapper() {
   local name="$1" value="$2"
+  step "smoke mapper ${name}"
   local mapper_id
   mapper_id="$(mapper_id_by_name "clients/${smoke_id}" "$name" || true)"
   if [[ -z "$mapper_id" ]]; then
