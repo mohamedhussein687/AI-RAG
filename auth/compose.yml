@@ -1,0 +1,67 @@
+name: construction-rag-auth
+
+x-log-options: &log-options
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
+services:
+  keycloak-postgres:
+    image: postgres:16.6-bookworm@sha256:557fea37a744d5f4c8faab304b0a90858b53ab119735a88c131fd19dab802f36
+    restart: unless-stopped
+    env_file: /home/rag/.config/construction-rag/keycloak.env
+    environment:
+      POSTGRES_DB: ${KEYCLOAK_DB_NAME}
+      POSTGRES_USER: ${KEYCLOAK_DB_USER}
+      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+    volumes:
+      - /home/rag/data/keycloak-postgres:/var/lib/postgresql/data
+    networks:
+      - keycloak-backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    logging: *log-options
+    security_opt:
+      - no-new-privileges:true
+
+  keycloak:
+    image: construction-rag/keycloak:26.6.3
+    build:
+      context: .
+      dockerfile: Containerfile
+    restart: unless-stopped
+    command: ["start", "--optimized"]
+    env_file: /home/rag/.config/construction-rag/keycloak.env
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-postgres:5432/${KEYCLOAK_DB_NAME}
+      KC_DB_USERNAME: ${KEYCLOAK_DB_USER}
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+      KC_HOSTNAME: https://modelauth.techlabeg.com
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+    depends_on:
+      keycloak-postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8180:8080"
+    networks:
+      - keycloak-backend
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 3 bash -lc '</dev/tcp/127.0.0.1/9000'"]
+      interval: 15s
+      timeout: 5s
+      retries: 30
+    logging: *log-options
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 2g
+
+networks:
+  keycloak-backend:
