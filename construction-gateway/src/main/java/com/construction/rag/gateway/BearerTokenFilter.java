@@ -13,6 +13,7 @@ import org.springframework.security.oauth2.jwt.NimbusReactiveJwtDecoder;
 import org.springframework.security.oauth2.jwt.ReactiveJwtDecoder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.web.server.ServerWebExchange;
 import org.springframework.web.server.WebFilter;
@@ -27,6 +28,7 @@ class BearerTokenFilter implements WebFilter {
   private final GatewayProperties props;
   private final ReactiveJwtDecoder decoder;
 
+  @Autowired
   BearerTokenFilter(GatewayProperties props) {
     this.props = props;
     this.decoder = configured(props) ? NimbusReactiveJwtDecoder.withJwkSetUri(props.jwtJwkSetUri()).build() : null;
