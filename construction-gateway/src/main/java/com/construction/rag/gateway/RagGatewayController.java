@@ -22,7 +22,12 @@ class RagGatewayController {
   );
 
   private final AiModuleClient ai;
-  RagGatewayController(AiModuleClient ai) { this.ai = ai; }
+  private final SafeDatabaseQueryService databaseQueries;
+
+  RagGatewayController(AiModuleClient ai, SafeDatabaseQueryService databaseQueries) {
+    this.ai = ai;
+    this.databaseQueries = databaseQueries;
+  }
 
   @GetMapping("/health/live") Map<String, String> live() { return Map.of("status", "ok"); }
   @GetMapping("/health/ready") Mono<Object> ready() { return ai.get("/health/ready"); }
@@ -68,9 +73,35 @@ class RagGatewayController {
   Mono<Object> chat(@Valid @RequestBody Map<String, Object> request, ServerWebExchange exchange) {
     rejectSql(request);
     rejectClientContext(request);
+    RagClient client = exchange.getAttribute(ApiKeyClientFilter.RAG_CLIENT_ATTR);
+    if (client != null) return apiKeyChat(client, request);
     Map<String, Object> normalized = agentRequest(request, exchange);
     return ai.post("/api/agent/decide", normalized)
       .flatMap(decision -> finishDecision(decision, normalized));
+  }
+
+  private Mono<Object> apiKeyChat(RagClient client, Map<String, Object> request) {
+    Map<String, Object> normalized = mutableCopy(request);
+    normalized.putIfAbsent("conversation_id", "laravel-" + client.clientName());
+    normalized.putIfAbsent("locale", "ar");
+    normalized.putIfAbsent("conversation_history", List.of());
+    normalized.put("user_context", Map.of(
+      "id", "api-key:" + client.clientName(),
+      "tenant_id", client.clientName(),
+      "project_ids", List.of(client.clientName()),
+      "roles", List.of("laravel-client"),
+      "permissions", List.of("live-data.read")
+    ));
+    normalized.put("allowed_schema", Map.of("tables", List.of(Map.of(
+      "name", "projects",
+      "columns", List.of("id", "name", "status"),
+      "allowed_operations", List.of("count")
+    ))));
+    normalized.put("external_tools", List.of(Map.of("name", "database_query")));
+    normalized.put("local_tools", List.of());
+    normalized.put("rules", Map.of("return_sql", false, "max_tool_calls", 1, "max_rows", 100, "joins_allowed", false));
+    return ai.post("/api/agent/decide", normalized)
+      .flatMap(decision -> finishApiKeyDecision(client, decision, normalized));
   }
 
   @ExceptionHandler(IllegalArgumentException.class)
@@ -112,6 +143,33 @@ class RagGatewayController {
       return ai.post("/api/agent/final", finalRequest);
     }
     return Mono.just(decision);
+  }
+
+  private Mono<Object> finishApiKeyDecision(RagClient client, Object decision, Map<String, Object> normalized) {
+    if (!(decision instanceof Map<?, ?> map)) return Mono.just(decision);
+    Object type = map.get("type");
+    if (!"tool_calls".equals(type)) return Mono.just(decision);
+    Object callsObject = map.get("tool_calls");
+    if (!(callsObject instanceof List<?> calls) || calls.isEmpty()) throw new IllegalArgumentException("AI decision did not include an executable tool call");
+    Object first = calls.getFirst();
+    if (!(first instanceof Map<?, ?> toolCall)) throw new IllegalArgumentException("AI tool call is malformed");
+    if (!"database_query".equals(String.valueOf(toolCall.get("tool")))) throw new IllegalArgumentException("AI requested a non-allowlisted tool");
+    return databaseQueries.execute(client, toolCall)
+      .flatMap(result -> {
+        Map<String, Object> finalRequest = new LinkedHashMap<>();
+        finalRequest.put("conversation_id", normalized.get("conversation_id"));
+        finalRequest.put("message", normalized.get("message"));
+        finalRequest.put("locale", normalized.get("locale"));
+        finalRequest.put("conversation_history", normalized.get("conversation_history"));
+        finalRequest.put("tool_results", List.of(Map.of(
+          "tool_call_id", String.valueOf(toolCall.get("id")),
+          "tool", "database_query",
+          "result", result
+        )));
+        finalRequest.put("local_rag_results", List.of());
+        finalRequest.put("final_answer_instruction", map.get("final_answer_instruction"));
+        return ai.post("/api/agent/final", finalRequest);
+      });
   }
 
   private TrustedIdentity identity(ServerWebExchange exchange) {

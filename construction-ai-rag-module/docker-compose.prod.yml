@@ -186,6 +186,9 @@ services:
       SPRING_GATEWAY_HOST: 0.0.0.0
       SPRING_GATEWAY_PORT: 8080
       AI_INTERNAL_BASE_URL: http://ai-module-api:8000
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:

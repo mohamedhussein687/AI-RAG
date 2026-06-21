@@ -21,6 +21,14 @@ gateway:
   jwt-issuer: ${GATEWAY_JWT_ISSUER:}
   jwt-jwk-set-uri: ${GATEWAY_JWT_JWK_SET_URI:}
   jwt-audience: ${GATEWAY_JWT_AUDIENCE:}
+  client-db-encryption-key: ${GATEWAY_CLIENT_DB_ENCRYPTION_KEY:}
+  orbit-api-key: ${ORBIT_API_KEY:}
+  orbit-db-type: ${ORBIT_DB_TYPE:mysql}
+  orbit-db-host: ${ORBIT_DB_HOST:}
+  orbit-db-port: ${ORBIT_DB_PORT:3306}
+  orbit-db-name: ${ORBIT_DB_NAME:}
+  orbit-db-username: ${ORBIT_DB_USERNAME:}
+  orbit-db-password: ${ORBIT_DB_PASSWORD:}
 logging:
   pattern:
     console: '{"ts":"%d{yyyy-MM-dd HH:mm:ss.SSS}","level":"%level","logger":"%logger","msg":"%replace(%msg){''(?i)(bearer )[^ ]+'',''$1[REDACTED]''}"}%n'

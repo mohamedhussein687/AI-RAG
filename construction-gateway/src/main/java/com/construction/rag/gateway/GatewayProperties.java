@@ -10,5 +10,13 @@ public record GatewayProperties(
     long timeoutMs,
     String jwtIssuer,
     String jwtJwkSetUri,
-    String jwtAudience
+    String jwtAudience,
+    String clientDbEncryptionKey,
+    String orbitApiKey,
+    String orbitDbType,
+    String orbitDbHost,
+    Integer orbitDbPort,
+    String orbitDbName,
+    String orbitDbUsername,
+    String orbitDbPassword
 ) {}

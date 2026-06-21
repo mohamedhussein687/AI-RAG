@@ -14,6 +14,8 @@ import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.RecordedRequest;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mockito;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
@@ -114,8 +116,8 @@ class GatewayAuthenticationTest {
     try (MockWebServer ai = new MockWebServer()) {
       ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("{\"type\":\"clarification\",\"question\":\"هل يمكنك التوضيح؟\"}"));
       ai.start(InetAddress.getByName("127.0.0.1"), 0);
-      GatewayProperties props = new GatewayProperties(ai.url("/").toString(), "internal-ai-token", "", 5000, ISSUER, "http://127.0.0.1/jwks", AUDIENCE);
-      RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props));
+      GatewayProperties props = props(ai.url("/").toString(), "internal-ai-token");
+      RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props), null);
       ServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/api/agent/decide").build());
       exchange.getAttributes().put(BearerTokenFilter.IDENTITY_ATTR, identity());
 
@@ -135,7 +137,7 @@ class GatewayAuthenticationTest {
 
   @Test
   void forgedRequestBodyContextIsRejectedByController() {
-    RagGatewayController controller = new RagGatewayController(null);
+    RagGatewayController controller = new RagGatewayController(null, null);
     ServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/api/rag/search").build());
     exchange.getAttributes().put(BearerTokenFilter.IDENTITY_ATTR, identity());
 
@@ -148,8 +150,43 @@ class GatewayAuthenticationTest {
     throw new AssertionError("forged context was accepted");
   }
 
+  @Test
+  void apiKeyChatExecutesStructuredDatabasePlanAndFinalizesAnswer() throws Exception {
+    try (MockWebServer ai = new MockWebServer()) {
+      ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("""
+        {"type":"tool_calls","tool_calls":[{"id":"db_1","tool":"database_query","plan":{"operation":"count","table":"projects","filters":[{"column":"status","operator":"eq","value":"waiting"}],"limit":100}}],"local_rag_results":[],"final_answer_instruction":"Answer in Arabic."}
+        """));
+      ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("""
+        {"answer":"عدد المشاريع waiting هو 4.","display":{"type":"metric","data":{"tool_results":[{"count":4}],"citations_valid":true}},"sources":[]}
+        """));
+      ai.start(InetAddress.getByName("127.0.0.1"), 0);
+      GatewayProperties props = props(ai.url("/").toString(), "internal-ai-token");
+      SafeDatabaseQueryService db = Mockito.mock(SafeDatabaseQueryService.class);
+      Mockito.when(db.execute(Mockito.any(), Mockito.any())).thenReturn(Mono.just(Map.of("count", 4)));
+      RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props), db);
+      ServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/api/chat").header("X-API-Key", "redacted").build());
+      exchange.getAttributes().put(ApiKeyClientFilter.RAG_CLIENT_ATTR, new RagClient(7, "orbit", "mysql", "db", 3306, "orbit", "user", "encrypted", "active"));
+
+      Object response = controller.chat(Map.of("message", "كم مشروع waiting؟"), exchange).block();
+      RecordedRequest decide = ai.takeRequest(2, TimeUnit.SECONDS);
+      RecordedRequest finalAnswer = ai.takeRequest(2, TimeUnit.SECONDS);
+
+      assertThat(response).isInstanceOf(Map.class);
+      assertThat(decide.getPath()).isEqualTo("/api/agent/decide");
+      JsonNode decideBody = JSON.readTree(decide.getBody().readUtf8());
+      assertThat(decideBody.get("external_tools").get(0).get("name").asText()).isEqualTo("database_query");
+      assertThat(decideBody.get("allowed_schema").get("tables").get(0).get("name").asText()).isEqualTo("projects");
+      assertThat(finalAnswer.getPath()).isEqualTo("/api/agent/final");
+      JsonNode finalBody = JSON.readTree(finalAnswer.getBody().readUtf8());
+      assertThat(finalBody.get("tool_results").get(0).get("result").get("count").asInt()).isEqualTo(4);
+      ArgumentCaptor<Map> planCaptor = ArgumentCaptor.forClass(Map.class);
+      Mockito.verify(db).execute(Mockito.argThat(client -> client.clientName().equals("orbit")), planCaptor.capture());
+      assertThat(((Map<?, ?>) planCaptor.getValue().get("plan")).get("table")).isEqualTo("projects");
+    }
+  }
+
   private static BearerTokenFilter filter(Jwt jwt) {
-    GatewayProperties props = new GatewayProperties("http://ai", "internal", "", 1000, ISSUER, "http://jwks", AUDIENCE);
+    GatewayProperties props = props("http://ai", "internal");
     ReactiveJwtDecoder decoder = token -> Mono.just(jwt);
     return new BearerTokenFilter(props, decoder);
   }
@@ -188,5 +225,9 @@ class GatewayAuthenticationTest {
 
   private static TrustedIdentity identity() {
     return new TrustedIdentity("smoke-client", "smoke-tenant", List.of("smoke-project"), List.of("rag-user"), List.of("docs.admin", "docs.view", "policies.view"));
+  }
+
+  private static GatewayProperties props(String aiBaseUrl, String aiToken) {
+    return new GatewayProperties(aiBaseUrl, aiToken, "", 5000, ISSUER, "http://jwks", AUDIENCE, "", "", "mysql", "", 3306, "", "", "");
   }
 }

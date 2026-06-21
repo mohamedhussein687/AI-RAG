@@ -43,6 +43,7 @@ class BearerTokenFilter implements WebFilter {
   public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
     String path = exchange.getRequest().getPath().value();
     if (path.startsWith("/health/") || path.equals("/actuator/health") || path.equals("/actuator/health/liveness") || path.equals("/actuator/health/readiness")) return chain.filter(exchange);
+    if (exchange.getAttribute(ApiKeyClientFilter.RAG_CLIENT_ATTR) != null) return chain.filter(exchange);
     if (decoder == null) return reject(exchange, HttpStatus.SERVICE_UNAVAILABLE, "identity_provider_not_configured");
     String header = exchange.getRequest().getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
     if (header == null || !header.startsWith("Bearer ")) return reject(exchange, HttpStatus.UNAUTHORIZED, "missing_bearer_token");
