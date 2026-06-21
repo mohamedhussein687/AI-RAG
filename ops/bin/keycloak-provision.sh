@@ -12,19 +12,21 @@ source /home/rag/.config/construction-rag/keycloak.env
 set +a
 
 cd /home/rag/auth
-step() { echo "provision: $1"; }
+current_step="startup"
+trap 'echo "provision_failed_step=${current_step} line=${LINENO}" >&2' ERR
+step() { current_step="$1"; echo "provision: $1"; }
 kc() {
   docker compose --env-file /home/rag/.config/construction-rag/keycloak.env -p construction-rag-auth -f compose.yml exec -T \
     -e KEYCLOAK_ADMIN_PASSWORD="$KEYCLOAK_ADMIN_PASSWORD" \
     keycloak bash -lc '
-      /opt/keycloak/bin/kcadm.sh config credentials --server http://127.0.0.1:8080 --realm master --user "$KEYCLOAK_ADMIN_USERNAME" --password "$KEYCLOAK_ADMIN_PASSWORD" >/dev/null
+      /opt/keycloak/bin/kcadm.sh config credentials --server http://127.0.0.1:8080 --realm master --user "$KEYCLOAK_ADMIN_USERNAME" --password "$KEYCLOAK_ADMIN_PASSWORD" >/dev/null 2>&1
       /opt/keycloak/bin/kcadm.sh "$@"
     ' kcadm "$@"
 }
 
 mapper_id_by_name() {
   local path="$1" name="$2"
-  kc get "${path}/protocol-mappers/models" -r techlab --fields id,name --format csv --noquotes | awk -F, -v n="$name" '$2==n{print $1; exit}'
+  kc get "${path}/protocol-mappers/models" -r techlab --fields id,name --format csv --noquotes | awk -F, -v n="$name" '$2==n && !found{print $1; found=1}'
 }
 
 ensure_default_scope() {
@@ -49,10 +51,10 @@ else
 fi
 
 step "api client"
-api_id="$(kc get clients -r techlab -q clientId=construction-rag-api --fields id --format csv --noquotes | head -n1 || true)"
+api_id="$(kc get clients -r techlab -q clientId=construction-rag-api --fields id --format csv --noquotes | awk 'NR==1{print}' || true)"
 if [[ -z "$api_id" ]]; then
   kc create clients -r techlab -s clientId=construction-rag-api -s name=construction-rag-api -s protocol=openid-connect -s publicClient=false -s standardFlowEnabled=false -s implicitFlowEnabled=false -s directAccessGrantsEnabled=false -s serviceAccountsEnabled=false -s enabled=true >/dev/null
-  api_id="$(kc get clients -r techlab -q clientId=construction-rag-api --fields id --format csv --noquotes | head -n1)"
+  api_id="$(kc get clients -r techlab -q clientId=construction-rag-api --fields id --format csv --noquotes | awk 'NR==1{print}')"
 else
   kc update "clients/${api_id}" -r techlab -s publicClient=false -s standardFlowEnabled=false -s implicitFlowEnabled=false -s directAccessGrantsEnabled=false -s serviceAccountsEnabled=false -s enabled=true >/dev/null
 fi
@@ -63,10 +65,10 @@ for role in rag-user docs.admin docs.view policies.view; do
 done
 
 step "audience scope"
-scope_id="$(kc get client-scopes -r techlab --fields id,name --format csv --noquotes | awk -F, '$2=="construction-rag-api-audience"{print $1; exit}')"
+scope_id="$(kc get client-scopes -r techlab --fields id,name --format csv --noquotes | awk -F, '$2=="construction-rag-api-audience" && !found{print $1; found=1}')"
 if [[ -z "$scope_id" ]]; then
   kc create client-scopes -r techlab -s name=construction-rag-api-audience -s protocol=openid-connect >/dev/null
-  scope_id="$(kc get client-scopes -r techlab --fields id,name --format csv --noquotes | awk -F, '$2=="construction-rag-api-audience"{print $1; exit}')"
+  scope_id="$(kc get client-scopes -r techlab --fields id,name --format csv --noquotes | awk -F, '$2=="construction-rag-api-audience" && !found{print $1; found=1}')"
 fi
 aud_mapper_id="$(mapper_id_by_name "client-scopes/${scope_id}" construction-rag-api-audience || true)"
 if [[ -z "$aud_mapper_id" ]]; then
@@ -80,10 +82,10 @@ else
 fi
 
 step "context scope"
-context_scope_id="$(kc get client-scopes -r techlab --fields id,name --format csv --noquotes | awk -F, '$2=="construction-rag-context"{print $1; exit}')"
+context_scope_id="$(kc get client-scopes -r techlab --fields id,name --format csv --noquotes | awk -F, '$2=="construction-rag-context" && !found{print $1; found=1}')"
 if [[ -z "$context_scope_id" ]]; then
   kc create client-scopes -r techlab -s name=construction-rag-context -s protocol=openid-connect >/dev/null
-  context_scope_id="$(kc get client-scopes -r techlab --fields id,name --format csv --noquotes | awk -F, '$2=="construction-rag-context"{print $1; exit}')"
+  context_scope_id="$(kc get client-scopes -r techlab --fields id,name --format csv --noquotes | awk -F, '$2=="construction-rag-context" && !found{print $1; found=1}')"
 fi
 for spec in "tenant_id:false" "project_ids:true" "roles:true" "permissions:true"; do
   claim="${spec%%:*}"
@@ -104,10 +106,10 @@ for spec in "tenant_id:false" "project_ids:true" "roles:true" "permissions:true"
 done
 
 step "smoke client"
-smoke_id="$(kc get clients -r techlab -q clientId=construction-rag-smoke-client --fields id --format csv --noquotes | head -n1 || true)"
+smoke_id="$(kc get clients -r techlab -q clientId=construction-rag-smoke-client --fields id --format csv --noquotes | awk 'NR==1{print}' || true)"
 if [[ -z "$smoke_id" ]]; then
   kc create clients -r techlab -s clientId=construction-rag-smoke-client -s name=construction-rag-smoke-client -s protocol=openid-connect -s publicClient=false -s standardFlowEnabled=false -s implicitFlowEnabled=false -s directAccessGrantsEnabled=false -s serviceAccountsEnabled=true -s enabled=true >/dev/null
-  smoke_id="$(kc get clients -r techlab -q clientId=construction-rag-smoke-client --fields id --format csv --noquotes | head -n1)"
+  smoke_id="$(kc get clients -r techlab -q clientId=construction-rag-smoke-client --fields id --format csv --noquotes | awk 'NR==1{print}')"
 else
   kc update "clients/${smoke_id}" -r techlab -s publicClient=false -s standardFlowEnabled=false -s implicitFlowEnabled=false -s directAccessGrantsEnabled=false -s serviceAccountsEnabled=true -s enabled=true >/dev/null
 fi

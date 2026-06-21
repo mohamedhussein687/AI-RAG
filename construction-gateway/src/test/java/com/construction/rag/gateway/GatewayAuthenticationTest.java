@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.net.InetAddress;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -52,6 +53,40 @@ class GatewayAuthenticationTest {
   void missingTenantIsRejected() {
     MockServerWebExchange exchange = exchangeWithBearer("token");
     BearerTokenFilter filter = filter(jwt(List.of(AUDIENCE), ISSUER, ""));
+
+    filter.filter(exchange, e -> Mono.error(new AssertionError("controller should not run"))).block();
+
+    assertThat(exchange.getResponse().getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+  }
+
+  @Test
+  void expiredTokenIsRejected() {
+    MockServerWebExchange exchange = exchangeWithBearer("token");
+    BearerTokenFilter filter = filter(jwt(validClaims(), Instant.now().minusSeconds(600), Instant.now().minusSeconds(60)));
+
+    filter.filter(exchange, e -> Mono.error(new AssertionError("controller should not run"))).block();
+
+    assertThat(exchange.getResponse().getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+  }
+
+  @Test
+  void missingProjectMembershipIsRejected() {
+    Map<String, Object> claims = validClaims();
+    claims.remove("project_ids");
+    MockServerWebExchange exchange = exchangeWithBearer("token");
+    BearerTokenFilter filter = filter(jwt(claims));
+
+    filter.filter(exchange, e -> Mono.error(new AssertionError("controller should not run"))).block();
+
+    assertThat(exchange.getResponse().getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+  }
+
+  @Test
+  void missingPermissionsAreRejected() {
+    Map<String, Object> claims = validClaims();
+    claims.remove("permissions");
+    MockServerWebExchange exchange = exchangeWithBearer("token");
+    BearerTokenFilter filter = filter(jwt(claims));
 
     filter.filter(exchange, e -> Mono.error(new AssertionError("controller should not run"))).block();
 
@@ -124,11 +159,27 @@ class GatewayAuthenticationTest {
   }
 
   private static Jwt jwt(List<String> audience, String issuer, String tenant) {
-    return new Jwt("token", Instant.now().minusSeconds(1), Instant.now().plusSeconds(300), Map.of("alg", "RS256"), Map.of(
-      "iss", issuer,
+    Map<String, Object> claims = validClaims();
+    claims.put("iss", issuer);
+    claims.put("aud", audience);
+    claims.put("tenant_id", tenant);
+    return jwt(claims);
+  }
+
+  private static Jwt jwt(Map<String, Object> claims) {
+    return jwt(claims, Instant.now().minusSeconds(1), Instant.now().plusSeconds(300));
+  }
+
+  private static Jwt jwt(Map<String, Object> claims, Instant issuedAt, Instant expiresAt) {
+    return new Jwt("token", issuedAt, expiresAt, Map.of("alg", "RS256"), claims);
+  }
+
+  private static Map<String, Object> validClaims() {
+    return new HashMap<>(Map.of(
+      "iss", ISSUER,
       "sub", "smoke-client",
-      "aud", audience,
-      "tenant_id", tenant,
+      "aud", List.of(AUDIENCE),
+      "tenant_id", "smoke-tenant",
       "project_ids", List.of("smoke-project"),
       "roles", List.of("rag-user"),
       "permissions", List.of("docs.admin", "docs.view", "policies.view")

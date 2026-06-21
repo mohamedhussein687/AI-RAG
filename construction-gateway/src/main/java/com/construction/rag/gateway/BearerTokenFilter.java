@@ -57,12 +57,16 @@ class BearerTokenFilter implements WebFilter {
     if (props.jwtAudience() != null && !props.jwtAudience().isBlank() && !jwt.getAudience().contains(props.jwtAudience())) return reject(exchange, HttpStatus.UNAUTHORIZED, "wrong_audience");
     String tenantId = stringClaim(jwt, "tenant_id");
     if (tenantId == null || tenantId.isBlank()) return reject(exchange, HttpStatus.FORBIDDEN, "tenant_membership_required");
+    List<String> projectIds = listClaim(jwt, "project_ids");
+    List<String> permissions = listClaim(jwt, "permissions");
+    if (projectIds.isEmpty()) return reject(exchange, HttpStatus.FORBIDDEN, "project_membership_required");
+    if (permissions.isEmpty()) return reject(exchange, HttpStatus.FORBIDDEN, "permission_required");
     TrustedIdentity identity = new TrustedIdentity(
       jwt.getSubject(),
       tenantId,
-      listClaim(jwt, "project_ids"),
+      projectIds,
       listClaim(jwt, "roles"),
-      listClaim(jwt, "permissions")
+      permissions
     );
     exchange.getAttributes().put(IDENTITY_ATTR, identity);
     return chain.filter(exchange);
@@ -82,10 +86,20 @@ class BearerTokenFilter implements WebFilter {
     Object value = jwt.getClaims().get(name);
     if (value instanceof List<?> list) {
       List<String> out = new ArrayList<>();
-      for (Object item : list) out.add(String.valueOf(item));
+      for (Object item : list) {
+        String stringValue = String.valueOf(item).trim();
+        if (!stringValue.isBlank()) out.add(stringValue);
+      }
       return List.copyOf(out);
     }
-    if (value instanceof String s && !s.isBlank()) return List.of(s.split(","));
+    if (value instanceof String s && !s.isBlank()) {
+      List<String> out = new ArrayList<>();
+      for (String item : s.split(",")) {
+        String stringValue = item.trim();
+        if (!stringValue.isBlank()) out.add(stringValue);
+      }
+      return List.copyOf(out);
+    }
     return List.of();
   }
 
