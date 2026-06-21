@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Java / Maven
+construction-gateway/target/
+.mvn/wrapper/maven-wrapper.jar
+
+# Node/build/cache artifacts
+node_modules/
+dist/
+build/
+.cache/
+
+# Local and production secrets
+.env
+.env.*
+!.env.example
+production.env
+*.secret
+*.token
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+id_rsa*
+id_ed25519*
+.ssh/
+
+# Runtime data and generated state
+models/
+data/
+logs/
+backups/
+qdrant_storage/
+postgres_data/
+*.sqlite
+*.sqlite3
+*.db
+
+# Docker/runtime output
+*.log
+*.pid
+.docker/
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
+*.swp

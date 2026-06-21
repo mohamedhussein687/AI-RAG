@@ -1,0 +1,50 @@
+services:
+  ai-module-api:
+    build:
+      context: ./ai_module
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    env_file: .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - qdrant
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ai_rag
+      POSTGRES_USER: ai
+      POSTGRES_PASSWORD: ai
+    ports:
+      - "5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  vllm-chat:
+    image: vllm/vllm-openai:latest
+    profiles: ["gpu"]
+    environment:
+      MODEL_NAME: ${CHAT_MODEL:-Qwen/Qwen3-30B-A3B-Instruct-2507}
+      TENSOR_PARALLEL_SIZE: ${VLLM_TENSOR_PARALLEL_SIZE:-1}
+    command: >
+      --model ${CHAT_MODEL:-Qwen/Qwen3-30B-A3B-Instruct-2507}
+      --host 0.0.0.0
+      --port 8100
+      --tensor-parallel-size ${VLLM_TENSOR_PARALLEL_SIZE:-1}
+    ports:
+      - "8100:8100"
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+
+volumes:
+  qdrant_data:
+  postgres_data:
+  hf_cache:

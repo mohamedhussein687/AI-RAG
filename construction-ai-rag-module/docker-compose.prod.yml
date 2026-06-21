@@ -1,0 +1,204 @@
+name: construction-rag
+
+x-log-options: &log-options
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
+x-security: &security
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+services:
+  postgres:
+    image: postgres:16.6-bookworm
+    restart: unless-stopped
+    env_file: /home/rag/.config/construction-rag/production.env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - /home/rag/data/postgres:/var/lib/postgresql/data
+    networks: [rag-backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    logging: *log-options
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.5
+    restart: unless-stopped
+    volumes:
+      - /home/rag/data/qdrant:/qdrant/storage
+    networks: [rag-backend]
+    healthcheck:
+      test: ["CMD", "bash", "-lc", "timeout 3 bash -c '</dev/tcp/127.0.0.1/6333'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    logging: *log-options
+
+  embedding-service:
+    image: ghcr.io/huggingface/text-embeddings-inference:1.7.2
+    restart: unless-stopped
+    command: ["--model-id", "${EMBEDDING_MODEL}", "--revision", "${EMBEDDING_MODEL_REVISION}", "--port", "80"]
+    env_file: /home/rag/.config/construction-rag/production.env
+    environment:
+      HF_HOME: /models/hf
+    volumes:
+      - /home/rag/models:/models
+      - /home/rag/.cache/huggingface:/data
+    networks: [rag-models]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+    logging: *log-options
+
+  reranker-service:
+    image: ghcr.io/huggingface/text-embeddings-inference:1.7.2
+    restart: unless-stopped
+    command: ["--model-id", "${RERANKER_MODEL}", "--revision", "${RERANKER_MODEL_REVISION}", "--port", "80"]
+    env_file: /home/rag/.config/construction-rag/production.env
+    environment:
+      HF_HOME: /models/hf
+    volumes:
+      - /home/rag/models:/models
+      - /home/rag/.cache/huggingface:/data
+    networks: [rag-models]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+    logging: *log-options
+
+  vllm-chat:
+    image: vllm/vllm-openai:v0.6.6.post1
+    restart: unless-stopped
+    command:
+      - --model
+      - ${CHAT_MODEL}
+      - --revision
+      - ${CHAT_MODEL_REVISION}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --dtype
+      - ${CHAT_DTYPE}
+      - --quantization
+      - ${CHAT_QUANTIZATION}
+      - --max-model-len
+      - "${CHAT_MAX_MODEL_LEN}"
+      - --max-num-seqs
+      - "${CHAT_MAX_NUM_SEQS}"
+      - --gpu-memory-utilization
+      - "${CHAT_GPU_MEMORY_UTILIZATION}"
+    env_file: /home/rag/.config/construction-rag/production.env
+    environment:
+      HF_HOME: /models/hf
+    volumes:
+      - /home/rag/models:/models
+      - /home/rag/.cache/huggingface:/data
+    networks: [rag-models]
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/v1/models"]
+      interval: 20s
+      timeout: 10s
+      retries: 30
+    logging: *log-options
+
+  ai-module-api:
+    build:
+      context: ./ai_module
+    restart: unless-stopped
+    env_file: /home/rag/.config/construction-rag/production.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      embedding-service:
+        condition: service_healthy
+      reranker-service:
+        condition: service_healthy
+      vllm-chat:
+        condition: service_healthy
+    networks: [rag-backend, rag-models]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5)"]
+      interval: 15s
+      timeout: 8s
+      retries: 20
+    logging: *log-options
+    <<: *security
+
+  ingestion-worker:
+    build:
+      context: ./ai_module
+    restart: unless-stopped
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: /home/rag/.config/construction-rag/production.env
+    profiles: ["worker"]
+    networks: [rag-backend, rag-models]
+    logging: *log-options
+    <<: *security
+
+  spring-gateway:
+    build:
+      context: ../construction-gateway
+    restart: unless-stopped
+    env_file: /home/rag/.config/construction-rag/production.env
+    environment:
+      SPRING_GATEWAY_HOST: 0.0.0.0
+      SPRING_GATEWAY_PORT: 8080
+      AI_INTERNAL_BASE_URL: http://ai-module-api:8000
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      ai-module-api:
+        condition: service_healthy
+    networks: [rag-gateway, rag-backend]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health/ready"]
+      interval: 15s
+      timeout: 8s
+      retries: 20
+    logging: *log-options
+    <<: *security
+
+networks:
+  rag-backend:
+    internal: true
+  rag-models:
+  rag-gateway:

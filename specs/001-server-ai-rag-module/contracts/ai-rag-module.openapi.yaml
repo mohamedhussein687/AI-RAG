@@ -1,0 +1,527 @@
+openapi: 3.1.0
+info:
+  title: Construction AI RAG Module API
+  version: 0.1.0
+  description: Server 2 AI and RAG module contract for Spring Boot Gateway integration.
+servers:
+  - url: http://ai-module-api:8000
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      summary: Return service and dependency health.
+      security: []
+      responses:
+        "200":
+          description: Health status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /api/agent/decide:
+    post:
+      summary: Decide whether to answer, clarify, call tools, refuse, or mark unsupported.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentDecideRequest"
+      responses:
+        "200":
+          description: Agent decision.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/FinalAnswerDecision"
+                  - $ref: "#/components/schemas/ClarificationDecision"
+                  - $ref: "#/components/schemas/ToolCallsDecision"
+                  - $ref: "#/components/schemas/ForbiddenDecision"
+                  - $ref: "#/components/schemas/UnsupportedDecision"
+                discriminator:
+                  propertyName: type
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/agent/final:
+    post:
+      summary: Compose a final answer from gateway tool results and local RAG results.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentFinalRequest"
+      responses:
+        "200":
+          description: Final answer.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentFinalResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/rag/documents:
+    post:
+      summary: Index a document for local RAG search.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DocumentIndexRequest"
+      responses:
+        "201":
+          description: Document accepted and indexed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentIndexResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /api/rag/search:
+    post:
+      summary: Search authorized local knowledge chunks.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RagSearchRequest"
+      responses:
+        "200":
+          description: Authorized ranked chunks.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RagSearchResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer token.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ValidationError:
+      description: Invalid request body.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status, dependencies]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, down]
+        dependencies:
+          type: object
+          additionalProperties:
+            type: object
+            required: [status]
+            properties:
+              status:
+                type: string
+                enum: [ok, degraded, down]
+              detail:
+                type: string
+    ErrorResponse:
+      type: object
+      required: [error, request_id]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+        request_id:
+          type: string
+    UserContext:
+      type: object
+      required: [tenant_id, permissions]
+      properties:
+        id:
+          type: string
+        tenant_id:
+          type: string
+        project_ids:
+          type: array
+          items:
+            type: string
+        roles:
+          type: array
+          items:
+            type: string
+        permissions:
+          type: array
+          items:
+            type: string
+    ConversationMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [user, assistant, system, tool]
+        content:
+          type: string
+    AgentDecideRequest:
+      type: object
+      required: [conversation_id, message, user_context, allowed_schema, available_tools, rules]
+      properties:
+        conversation_id:
+          type: string
+        message:
+          type: string
+          minLength: 1
+        locale:
+          type: string
+          default: ar
+        conversation_history:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConversationMessage"
+        user_context:
+          $ref: "#/components/schemas/UserContext"
+        allowed_schema:
+          $ref: "#/components/schemas/AllowedSchema"
+        available_tools:
+          type: array
+          items:
+            $ref: "#/components/schemas/AvailableTool"
+        rules:
+          $ref: "#/components/schemas/AgentRules"
+    AllowedSchema:
+      type: object
+      required: [tables]
+      properties:
+        tables:
+          type: array
+          items:
+            type: object
+            required: [name, columns]
+            properties:
+              name:
+                type: string
+              columns:
+                type: array
+                items:
+                  type: string
+              allowed_operations:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DbOperation"
+    AvailableTool:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          enum: [database_query, knowledge_search]
+    AgentRules:
+      type: object
+      required: [return_sql, max_tool_calls, max_rows, joins_allowed]
+      properties:
+        return_sql:
+          type: boolean
+          const: false
+        max_tool_calls:
+          type: integer
+          minimum: 1
+          maximum: 20
+        max_rows:
+          type: integer
+          minimum: 1
+          maximum: 1000
+        joins_allowed:
+          type: boolean
+    FinalAnswerDecision:
+      type: object
+      required: [type, answer]
+      properties:
+        type:
+          type: string
+          const: final_answer
+        answer:
+          type: string
+    ClarificationDecision:
+      type: object
+      required: [type, question]
+      properties:
+        type:
+          type: string
+          const: clarification
+        question:
+          type: string
+    ForbiddenDecision:
+      type: object
+      required: [type, answer]
+      properties:
+        type:
+          type: string
+          const: forbidden
+        answer:
+          type: string
+    UnsupportedDecision:
+      type: object
+      required: [type, answer]
+      properties:
+        type:
+          type: string
+          const: unsupported
+        answer:
+          type: string
+    ToolCallsDecision:
+      type: object
+      required: [type, tool_calls, local_rag_results, final_answer_instruction]
+      properties:
+        type:
+          type: string
+          const: tool_calls
+        tool_calls:
+          type: array
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/ToolCall"
+        local_rag_results:
+          type: array
+          items:
+            $ref: "#/components/schemas/RagChunk"
+        final_answer_instruction:
+          type: string
+    ToolCall:
+      type: object
+      required: [id, tool, plan]
+      properties:
+        id:
+          type: string
+        tool:
+          type: string
+          const: database_query
+        plan:
+          $ref: "#/components/schemas/DatabaseQueryPlan"
+    DbOperation:
+      type: string
+      enum: [count, list, sum, avg, min, max, group_count]
+    DatabaseQueryPlan:
+      type: object
+      required: [operation, table, limit]
+      properties:
+        operation:
+          $ref: "#/components/schemas/DbOperation"
+        table:
+          type: string
+        column:
+          type:
+            - string
+            - "null"
+        filters:
+          type: array
+          items:
+            type: object
+            required: [column, operator, value]
+            properties:
+              column:
+                type: string
+              operator:
+                type: string
+                enum: [eq, ne, gt, gte, lt, lte, in, contains]
+              value: {}
+        order_by:
+          type:
+            - object
+            - "null"
+          properties:
+            column:
+              type: string
+            direction:
+              type: string
+              enum: [asc, desc]
+        group_by:
+          type:
+            - string
+            - "null"
+        limit:
+          type: integer
+          minimum: 1
+    AgentFinalRequest:
+      type: object
+      required: [conversation_id, message, tool_results, local_rag_results]
+      properties:
+        conversation_id:
+          type: string
+        message:
+          type: string
+        locale:
+          type: string
+          default: ar
+        conversation_history:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConversationMessage"
+        tool_results:
+          type: array
+          items:
+            type: object
+            required: [tool_call_id, tool, result]
+            properties:
+              tool_call_id:
+                type: string
+              tool:
+                type: string
+                enum: [database_query]
+              result: {}
+        local_rag_results:
+          type: array
+          items:
+            $ref: "#/components/schemas/RagChunk"
+        final_answer_instruction:
+          type: string
+    AgentFinalResponse:
+      type: object
+      required: [answer, display, sources]
+      properties:
+        answer:
+          type: string
+        display:
+          type: object
+          required: [type, data]
+          properties:
+            type:
+              type: string
+              enum: [text, metric, table, answer_with_sources, mixed, clarification]
+            data: {}
+        sources:
+          type: array
+          items:
+            $ref: "#/components/schemas/Source"
+    DocumentIndexRequest:
+      type: object
+      required: [tenant_id, title, source_type, content, access_policy]
+      properties:
+        tenant_id:
+          type: string
+        project_id:
+          type: string
+        title:
+          type: string
+        source_type:
+          type: string
+        content:
+          type: string
+          minLength: 1
+        access_policy:
+          type: object
+          required: [permissions]
+          properties:
+            permissions:
+              type: array
+              items:
+                type: string
+        metadata:
+          type: object
+          additionalProperties: true
+    DocumentIndexResponse:
+      type: object
+      required: [document_id, status, chunks_indexed]
+      properties:
+        document_id:
+          type: string
+        status:
+          type: string
+          enum: [indexed]
+        chunks_indexed:
+          type: integer
+          minimum: 1
+    RagSearchRequest:
+      type: object
+      required: [query, user_context]
+      properties:
+        query:
+          type: string
+          minLength: 1
+        user_context:
+          $ref: "#/components/schemas/UserContext"
+        top_k:
+          type: integer
+          default: 5
+          minimum: 1
+          maximum: 20
+        filters:
+          type: object
+          properties:
+            document_types:
+              type: array
+              items:
+                type: string
+            project_id:
+              type: string
+    RagSearchResponse:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/RagChunk"
+    RagChunk:
+      type: object
+      required: [chunk_id, document_id, title, source_type, chunk_index, text]
+      properties:
+        chunk_id:
+          type: string
+        document_id:
+          type: string
+        title:
+          type: string
+        source_type:
+          type: string
+        project_id:
+          type: string
+        chunk_index:
+          type: integer
+        page_number:
+          type: integer
+        section_title:
+          type: string
+        text:
+          type: string
+        score:
+          type: number
+    Source:
+      type: object
+      required: [document_id, title, source_type]
+      properties:
+        document_id:
+          type: string
+        title:
+          type: string
+        source_type:
+          type: string
+        chunk_id:
+          type: string
+        page_number:
+          type: integer
+        section_title:
+          type: string
