@@ -44,6 +44,7 @@ class SafeDatabaseQueryService {
     DataSource dataSource = dataSources.dataSource(client);
     try (Connection connection = dataSource.getConnection()) {
       connection.setReadOnly(true);
+      validateActualSchema(connection, table, filters);
       try (PreparedStatement statement = connection.prepareStatement(sql)) {
         statement.setQueryTimeout(10);
         for (int i = 0; i < params.size(); i++) statement.setObject(i + 1, params.get(i));
@@ -51,6 +52,19 @@ class SafeDatabaseQueryService {
           rs.next();
           return Map.of("count", rs.getLong(1));
         }
+      }
+    }
+  }
+
+  private void validateActualSchema(Connection connection, String table, List<?> filters) throws Exception {
+    try (ResultSet tables = connection.getMetaData().getTables(connection.getCatalog(), null, table, new String[]{"TABLE"})) {
+      if (!tables.next()) throw new IllegalArgumentException("client database table missing: " + table);
+    }
+    for (Object item : filters) {
+      Map<?, ?> filter = requireMap(item, "filter");
+      String column = identifier(filter.get("column"));
+      try (ResultSet columns = connection.getMetaData().getColumns(connection.getCatalog(), null, table, column)) {
+        if (!columns.next()) throw new IllegalArgumentException("client database column missing: " + table + "." + column);
       }
     }
   }
