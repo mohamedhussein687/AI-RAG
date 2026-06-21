@@ -181,4 +181,12 @@ claim_client_ids+=("$missing_permission_id")
 token_file_for_claim_client "$missing_permission_client" "$missing_permission_id" "$tmpdir/missing-permission"
 check_rejected_claim_matrix missing_permission "$tmpdir/missing-permission.jwt"
 
+expired_client="codex-expired-token-$(date -u +%s)"
+expired_id="$(create_claim_client "$expired_client" "smoke-tenant" "smoke-project" "rag-user" "docs.view")"
+claim_client_ids+=("$expired_id")
+kc update "clients/${expired_id}" -r techlab -s 'attributes."access.token.lifespan"=1' >/dev/null 2>&1
+token_file_for_claim_client "$expired_client" "$expired_id" "$tmpdir/expired-token"
+sleep 3
+check_401_matrix expired_token "$tmpdir/expired-token.jwt"
+
 echo "negative_auth_tests=PASS"
