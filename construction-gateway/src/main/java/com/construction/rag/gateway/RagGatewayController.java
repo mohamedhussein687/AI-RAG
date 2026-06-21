@@ -5,9 +5,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
@@ -29,10 +31,7 @@ class RagGatewayController {
   Mono<Object> decide(@Valid @RequestBody Map<String, Object> request, ServerWebExchange exchange) {
     rejectSql(request);
     rejectClientContext(request);
-    Map<String, Object> normalized = mutableCopy(request);
-    normalized.put("user_context", identity(exchange).userContext());
-    normalized.putIfAbsent("allowed_schema", Map.of("tables", List.of()));
-    return ai.post("/api/agent/decide", normalized);
+    return ai.post("/api/agent/decide", agentRequest(request, exchange));
   }
 
   @PostMapping("/api/agent/final")
@@ -65,8 +64,55 @@ class RagGatewayController {
     return ai.post("/api/rag/search", normalized);
   }
 
+  @PostMapping("/api/chat")
+  Mono<Object> chat(@Valid @RequestBody Map<String, Object> request, ServerWebExchange exchange) {
+    rejectSql(request);
+    rejectClientContext(request);
+    Map<String, Object> normalized = agentRequest(request, exchange);
+    return ai.post("/api/agent/decide", normalized)
+      .flatMap(decision -> finishDecision(decision, normalized));
+  }
+
   @ExceptionHandler(IllegalArgumentException.class)
   ResponseEntity<Map<String, String>> badRequest(IllegalArgumentException ex) { return ResponseEntity.badRequest().body(Map.of("error", ex.getMessage())); }
+
+  @ExceptionHandler(ResponseStatusException.class)
+  ResponseEntity<Map<String, String>> downstream(ResponseStatusException ex) {
+    HttpStatus status = HttpStatus.resolve(ex.getStatusCode().value());
+    return ResponseEntity.status(status == null ? HttpStatus.BAD_GATEWAY : status)
+      .body(Map.of("error", "ai_module_request_failed"));
+  }
+
+  private Map<String, Object> agentRequest(Map<String, Object> request, ServerWebExchange exchange) {
+    Map<String, Object> normalized = mutableCopy(request);
+    normalized.put("user_context", identity(exchange).userContext());
+    normalized.putIfAbsent("conversation_id", "public-chat");
+    normalized.putIfAbsent("locale", "ar");
+    normalized.putIfAbsent("conversation_history", List.of());
+    normalized.putIfAbsent("allowed_schema", Map.of("tables", List.of()));
+    normalized.putIfAbsent("external_tools", List.of());
+    normalized.putIfAbsent("local_tools", List.of(Map.of("name", "knowledge_search")));
+    normalized.putIfAbsent("rules", Map.of("return_sql", false, "max_tool_calls", 3, "max_rows", 100, "joins_allowed", false));
+    return normalized;
+  }
+
+  private Mono<Object> finishDecision(Object decision, Map<String, Object> normalized) {
+    if (!(decision instanceof Map<?, ?> map)) return Mono.just(decision);
+    Object type = map.get("type");
+    if ("tool_calls".equals(type)) {
+      Map<String, Object> finalRequest = new LinkedHashMap<>();
+      finalRequest.put("conversation_id", normalized.get("conversation_id"));
+      finalRequest.put("message", normalized.get("message"));
+      finalRequest.put("locale", normalized.get("locale"));
+      finalRequest.put("conversation_history", normalized.get("conversation_history"));
+      finalRequest.put("tool_results", List.of());
+      Object localRagResults = map.containsKey("local_rag_results") ? map.get("local_rag_results") : List.of();
+      finalRequest.put("local_rag_results", localRagResults);
+      finalRequest.put("final_answer_instruction", map.get("final_answer_instruction"));
+      return ai.post("/api/agent/final", finalRequest);
+    }
+    return Mono.just(decision);
+  }
 
   private TrustedIdentity identity(ServerWebExchange exchange) {
     TrustedIdentity identity = exchange.getAttribute(BearerTokenFilter.IDENTITY_ATTR);
