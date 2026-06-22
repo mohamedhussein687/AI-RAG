@@ -110,6 +110,7 @@ class AgentDecideRequest(StrictModel):
     conversation_history: list[ConversationMessage] = Field(default_factory=list)
     user_context: UserContext
     allowed_schema: AllowedSchema = Field(default_factory=AllowedSchema)
+    semantic_catalog: dict[str, Any] = Field(default_factory=dict)
     external_tools: list[ToolName] = Field(default_factory=list)
     local_tools: list[ToolName] = Field(default_factory=list)
     rules: AgentRules = Field(default_factory=AgentRules)

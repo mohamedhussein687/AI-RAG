@@ -19,19 +19,18 @@ class RagGatewayController {
   private static final Set<String> FORBIDDEN_PUBLIC_CONTEXT_KEYS = Set.of(
     "user_context", "userContext", "tenant_id", "tenantId", "project_id", "projectId", "project_ids", "projectIds",
     "roles", "permissions", "admin", "isAdmin", "allowed_schema", "allowedSchema", "database_scope", "databaseScope"
+    , "semantic_catalog", "semanticCatalog"
   );
 
   private final AiModuleClient ai;
   private final SafeDatabaseQueryService databaseQueries;
   private final SemanticCatalogService catalogs;
-  private final OrbitSemanticPlanner orbitPlanner;
   private final ArabicDatabaseAnswerFormatter arabicFormatter;
 
-  RagGatewayController(AiModuleClient ai, SafeDatabaseQueryService databaseQueries, SemanticCatalogService catalogs, OrbitSemanticPlanner orbitPlanner, ArabicDatabaseAnswerFormatter arabicFormatter) {
+  RagGatewayController(AiModuleClient ai, SafeDatabaseQueryService databaseQueries, SemanticCatalogService catalogs, ArabicDatabaseAnswerFormatter arabicFormatter) {
     this.ai = ai;
     this.databaseQueries = databaseQueries;
     this.catalogs = catalogs;
-    this.orbitPlanner = orbitPlanner;
     this.arabicFormatter = arabicFormatter;
   }
 
@@ -88,18 +87,8 @@ class RagGatewayController {
 
   private Mono<Object> apiKeyChat(RagClient client, Map<String, Object> request) {
     String message = String.valueOf(request.getOrDefault("message", ""));
-    if (orbitPlanner.identityQuestion(message)) return Mono.just(arabicFormatter.identity());
+    if (identityQuestion(message)) return Mono.just(arabicFormatter.identity());
     SemanticCatalog catalog = catalogs.catalog(client);
-    java.util.Optional<Map<String, Object>> localPlan = orbitPlanner.plan(message, catalog);
-    if (localPlan.isPresent()) {
-      Map<String, Object> toolCall = localPlan.get();
-      return databaseQueries.execute(client, toolCall)
-        .map(result -> (Object) arabicFormatter.answer(message, toolCall, result))
-        .onErrorResume(ignored -> Mono.just(arabicFormatter.unsupported("الجدول أو العلاقة أو الحقل المطلوب")));
-    }
-    if (message.contains("كم") || message.contains("اعرض") || message.contains("حالات") || message.toLowerCase().contains("active") || message.toLowerCase().contains("waiting")) {
-      return Mono.just(arabicFormatter.unsupported("الجدول أو العلاقة أو الحقل المطلوب"));
-    }
     Map<String, Object> normalized = mutableCopy(request);
     normalized.putIfAbsent("conversation_id", "laravel-" + client.clientName());
     normalized.putIfAbsent("locale", "ar");
@@ -177,11 +166,13 @@ class RagGatewayController {
   }
 
   private Mono<Object> localApiKeyDecision(RagClient client, Map<String, Object> normalized, SemanticCatalog catalog) {
-    String message = String.valueOf(normalized.getOrDefault("message", ""));
-    return orbitPlanner.plan(message, catalog)
-      .map(toolCall -> databaseQueries.execute(client, toolCall)
-        .map(result -> (Object) arabicFormatter.answer(message, toolCall, result)))
-      .orElseGet(() -> Mono.just(arabicFormatter.unsupported("الجدول أو العلاقة أو الحقل المطلوب")));
+    return Mono.just(arabicFormatter.unsupported("الجدول أو العلاقة أو الحقل المطلوب"));
+  }
+
+  private boolean identityQuestion(String message) {
+    String text = message == null ? "" : message.toLowerCase().replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا').replace('؟', ' ').trim();
+    return text.contains("انت مين") || text.contains("مين انت") || text.contains("ما اسمك") || text.contains("اسمك ايه")
+      || text.contains("انت شغال على مشروع ايه") || text.contains("شغال على مشروع ايه");
   }
 
   private TrustedIdentity identity(ServerWebExchange exchange) {

@@ -117,7 +117,7 @@ class GatewayAuthenticationTest {
       ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("{\"type\":\"clarification\",\"question\":\"هل يمكنك التوضيح؟\"}"));
       ai.start(InetAddress.getByName("127.0.0.1"), 0);
       GatewayProperties props = props(ai.url("/").toString(), "internal-ai-token");
-      RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props), null, null, null, null);
+      RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props), null, null, null);
       ServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/api/agent/decide").build());
       exchange.getAttributes().put(BearerTokenFilter.IDENTITY_ATTR, identity());
 
@@ -137,7 +137,7 @@ class GatewayAuthenticationTest {
 
   @Test
   void forgedRequestBodyContextIsRejectedByController() {
-    RagGatewayController controller = new RagGatewayController(null, null, null, null, null);
+    RagGatewayController controller = new RagGatewayController(null, null, null, null);
     ServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/api/rag/search").build());
     exchange.getAttributes().put(BearerTokenFilter.IDENTITY_ATTR, identity());
 
@@ -165,7 +165,7 @@ class GatewayAuthenticationTest {
       Mockito.when(catalogs.catalog(Mockito.any())).thenReturn(catalog);
       Mockito.when(catalogs.allowedSchema(catalog)).thenReturn(Map.of("tables", List.of(Map.of("name", "projects", "columns", List.of("status"), "allowed_operations", List.of("count")))));
       Mockito.when(catalogs.promptSummary(catalog)).thenReturn(Map.of("tables", List.of()));
-      RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props), db, catalogs, new OrbitSemanticPlanner(), new ArabicDatabaseAnswerFormatter());
+      RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props), db, catalogs, new ArabicDatabaseAnswerFormatter());
       ServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/api/chat").header("X-API-Key", "redacted").build());
       exchange.getAttributes().put(ApiKeyClientFilter.RAG_CLIENT_ATTR, new RagClient(7, "orbit", "mysql", "db", 3306, "orbit", "user", "encrypted", "active"));
 
@@ -173,7 +173,11 @@ class GatewayAuthenticationTest {
       RecordedRequest decide = ai.takeRequest(2, TimeUnit.SECONDS);
 
       assertThat(response).isInstanceOf(Map.class);
-      assertThat(decide).isNull();
+      assertThat(decide).isNotNull();
+      assertThat(decide.getPath()).isEqualTo("/api/agent/decide");
+      JsonNode decideBody = JSON.readTree(decide.getBody().readUtf8());
+      assertThat(decideBody.get("semantic_catalog")).isNotNull();
+      assertThat(decideBody.get("external_tools").get(0).get("name").asText()).isEqualTo("database_query");
       assertThat(((Map<?, ?>) response).get("answer")).isEqualTo("عدد المشاريع بحالة waiting هو 4.");
       ArgumentCaptor<Map> planCaptor = ArgumentCaptor.forClass(Map.class);
       Mockito.verify(db).execute(Mockito.argThat(client -> client.clientName().equals("orbit")), planCaptor.capture());
@@ -185,7 +189,7 @@ class GatewayAuthenticationTest {
   void apiKeyIdentityQuestionDoesNotCallDatabaseOrAi() {
     SafeDatabaseQueryService db = Mockito.mock(SafeDatabaseQueryService.class);
     SemanticCatalogService catalogs = Mockito.mock(SemanticCatalogService.class);
-    RagGatewayController controller = new RagGatewayController(null, db, catalogs, new OrbitSemanticPlanner(), new ArabicDatabaseAnswerFormatter());
+    RagGatewayController controller = new RagGatewayController(null, db, catalogs, new ArabicDatabaseAnswerFormatter());
     ServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/api/chat").header("X-API-Key", "redacted").build());
     exchange.getAttributes().put(ApiKeyClientFilter.RAG_CLIENT_ATTR, new RagClient(7, "orbit", "mysql", "db", 3306, "orbit", "user", "encrypted", "active"));
 
