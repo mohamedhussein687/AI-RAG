@@ -25,7 +25,7 @@ class MessageRouter:
         "عميل", "عملاء", "العملاء", "client", "clients", "customer", "customers",
         "مشروع", "مشاريع", "المشاريع", "project", "projects",
         "فاتوره", "فواتير", "invoice", "invoices",
-        "مستخدم", "مستخدمين", "users",
+        "مستخدم", "مستخدمين", "users", "user", "حساب", "حسابات", "account", "accounts",
     )
     def route(self, message: str, has_database_catalog: bool = False) -> RouteDecision:
         text = ArabicNormalizer.normalize(message)

@@ -54,7 +54,7 @@ class SafeDatabaseQueryServiceTest {
     Map<String, Object> result = service.execute(orbit, Map.of(
       "plan", Map.of(
         "operation", "list",
-        "table", "users",
+        "table", "user",
         "columns", List.of("name"),
         "limit", 20
       )
@@ -63,6 +63,61 @@ class SafeDatabaseQueryServiceTest {
     assertThat(result).containsEntry("table", "users");
     assertThat(((List<?>) result.get("rows"))).hasSize(1);
     verify(connection).prepareStatement("select name as name from organization_employees limit 20");
+  }
+
+  @Test
+  void userDetailsAliasIsCanonicalizedBeforeAllowlistValidation() throws Exception {
+    ClientDataSourceManager manager = mock(ClientDataSourceManager.class);
+    DataSource dataSource = mock(DataSource.class);
+    Connection connection = mock(Connection.class);
+    DatabaseMetaData metaData = mock(DatabaseMetaData.class);
+    ResultSet tables = mock(ResultSet.class);
+    PreparedStatement statement = mock(PreparedStatement.class);
+    ResultSet queryResult = mock(ResultSet.class);
+    SemanticCatalogService catalogs = mock(SemanticCatalogService.class);
+    RagClient orbit = new RagClient(7, "orbit", "mysql", "db", 3306, "testorbit", "user", "encrypted", "active");
+
+    when(manager.dataSource(orbit)).thenReturn(dataSource);
+    when(dataSource.getConnection()).thenReturn(connection);
+    when(connection.getCatalog()).thenReturn("testorbit");
+    when(connection.getMetaData()).thenReturn(metaData);
+    when(metaData.getTables(eq("testorbit"), any(), eq("organization_employees"), any())).thenReturn(tables);
+    when(tables.next()).thenReturn(true);
+    when(metaData.getColumns(eq("testorbit"), any(), eq("organization_employees"), any())).thenAnswer(invocation -> {
+      ResultSet rs = mock(ResultSet.class);
+      when(rs.next()).thenReturn(true);
+      return rs;
+    });
+    String sql = "select name as name, type as type from organization_employees where name like ? limit 1";
+    when(connection.prepareStatement(sql)).thenReturn(statement);
+    when(statement.executeQuery()).thenReturn(queryResult);
+    when(queryResult.next()).thenReturn(true, false);
+    when(queryResult.getObject("name")).thenReturn("Ayman Ibrahim El Sayed");
+    when(queryResult.getObject("type")).thenReturn(2);
+    when(catalogs.catalog(orbit)).thenReturn(new SemanticCatalog("orbit", 9, "now", "hash", true, List.of(new CatalogTable(
+      "users", "organization_employees", "user", List.of("مستخدم", "مستخدمين", "حساب"), List.of("users", "user", "account", "organization_employees"),
+      List.of(
+        new CatalogColumn("name", "name", "string", true, List.of("filter", "sort", "group"), List.of(), false, true),
+        new CatalogColumn("type", "type", "number", true, List.of("filter", "sort", "group"), List.of(), false, true)
+      ),
+      List.of("count", "list", "select"), true, 86
+    ))));
+
+    SafeDatabaseQueryService service = new SafeDatabaseQueryService(manager, catalogs);
+    Map<String, Object> result = service.execute(orbit, Map.of(
+      "plan", Map.of(
+        "operation", "select",
+        "table", "user",
+        "columns", List.of("name", "type"),
+        "filters", List.of(Map.of("column", "name", "operator", "contains", "value", "Ayman Ibrahim El Sayed")),
+        "limit", 1
+      )
+    )).block();
+
+    assertThat(result).containsEntry("table", "users");
+    assertThat(((List<?>) result.get("rows"))).hasSize(1);
+    verify(statement).setObject(eq(1), eq("%Ayman Ibrahim El Sayed%"));
+    verify(connection).prepareStatement(sql);
   }
 
   @Test

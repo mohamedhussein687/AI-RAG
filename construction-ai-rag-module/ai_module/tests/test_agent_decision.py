@@ -624,6 +624,51 @@ def test_user_name_request_maps_to_logical_users(client, auth_headers, monkeypat
     assert plan["columns"] == ["name"]
 
 
+def test_user_details_request_maps_to_canonical_users_table(client, auth_headers, monkeypatch):
+    monkeypatch.setattr(LlmClient, "chat_json", qwen_project_plan_from_catalog())
+    response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("اريد بيانات المستخدم Ayman Ibrahim El Sayed", semantic_catalog=user_catalog()))
+    assert response.status_code == 200
+    data = response.json()
+    assert data["route"] == "database_query"
+    assert data["requires_database"] is True
+    plan = data["tool_calls"][0]["plan"]
+    assert plan["intent"] == "user_details"
+    assert plan["operation"] == "select"
+    assert plan["table"] == "users"
+    assert plan["entities"] == ["users"]
+    assert {"column": "name", "operator": "contains", "value": "ayman ibrahim el sayed"} in plan["filters"]
+    assert "name" in plan["columns"]
+    assert "type" in plan["columns"]
+
+
+def test_llm_user_table_alias_is_normalized_to_users(client, auth_headers, monkeypatch):
+    async def alias_plan(self, messages):
+        return {
+            "type": "tool_calls",
+            "tool_calls": [
+                {
+                    "id": "db_1",
+                    "tool": "database_query",
+                    "plan": {
+                        "operation": "select",
+                        "table": "user",
+                        "columns": ["name", "type"],
+                        "filters": [{"column": "name", "operator": "contains", "value": "Ayman Ibrahim El Sayed"}],
+                        "limit": 1,
+                    },
+                }
+            ],
+        }
+
+    monkeypatch.setattr(LlmClient, "chat_json", alias_plan)
+    response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("اريد بيانات المستخدم Ayman Ibrahim El Sayed", semantic_catalog=user_catalog()))
+    assert response.status_code == 200
+    data = response.json()
+    plan = data["tool_calls"][0]["plan"]
+    assert plan["table"] == "users"
+    assert plan["intent"] == "user_details"
+
+
 def test_vague_follow_up_resolves_to_previous_database_intent(client, auth_headers, monkeypatch):
     async def unsupported_without_context(self, messages):
         return {"type": "unsupported", "route": "unsupported", "answer": "لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."}

@@ -300,7 +300,10 @@ class DecisionService:
         return planned
 
     def _normalize_structured_plan(self, plan: dict, message: str) -> None:
-        table = str(plan.get("table") or "")
+        raw_table = str(plan.get("table") or "")
+        table = self._canonical_table(raw_table)
+        if table != raw_table:
+            plan["table"] = table
         operation = str(plan.get("operation") or "")
         columns = [str(column) for column in plan.get("columns") or [] if column]
         self._normalize_plan_filters(plan)
@@ -324,7 +327,28 @@ class DecisionService:
                 if self._user_name_request(message) and not columns:
                     plan["columns"] = ["name"]
                     plan["fields"] = ["name"]
-                plan.setdefault("intent", "list_users")
+                if plan.get("filters") and not plan.get("intent"):
+                    plan["intent"] = "user_details"
+                else:
+                    plan.setdefault("intent", "list_users")
+
+    def _canonical_table(self, value: str) -> str:
+        normalized = self._normalize(value)
+        aliases = {
+            "user": "users",
+            "users": "users",
+            "account": "users",
+            "accounts": "users",
+            "مستخدم": "users",
+            "المستخدم": "users",
+            "مستخدمين": "users",
+            "المستخدمين": "users",
+            "حساب": "users",
+            "الحساب": "users",
+            "حسابات": "users",
+            "الحسابات": "users",
+        }
+        return aliases.get(normalized, value)
 
     def _client_name_request(self, message: str) -> bool:
         text = self._normalize(message)

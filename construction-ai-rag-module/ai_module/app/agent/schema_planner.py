@@ -7,7 +7,7 @@ from .normalization import ArabicNormalizer
 class SchemaAwarePlanner:
     PROJECT_TERMS = ("مشروع", "مشاريع", "مشروعات", "project", "projects")
     CLIENT_TERMS = ("عميل", "عملاء", "العملاء", "client", "clients", "customer", "customers")
-    USER_TERMS = ("مستخدم", "مستخدمين", "المستخدمين", "users", "user", "system users")
+    USER_TERMS = ("مستخدم", "مستخدمين", "المستخدمين", "حساب", "حسابات", "account", "accounts", "users", "user", "system users")
     LIST_TERMS = ("اعرض", "عرض", "هات", "وريني", "اظهر", "show", "list", "display")
     NAME_TERMS = ("اسم", "اسماء", "الاسماء", "name", "names")
     COUNT_TERMS = ("كم", "عدد", "how many", "count", "total")
@@ -63,6 +63,32 @@ class SchemaAwarePlanner:
             return None
         if self._is_count(text):
             return self._tool_plan("count_users", "count", "users", limit=min(max_rows, 20), extra={"entities": ["users"]})
+        if self._is_details(text):
+            lookup_value = self._user_lookup_value(text)
+            if lookup_value:
+                name_column = self._first_column(table, ("name", "full_name", "username", "email"))
+                if not name_column:
+                    return self._configuration_error("لا يوجد حقل اسم للمستخدمين في خريطة البيانات الحالية.", ["users.name"])
+                columns = [
+                    column for column in [
+                        self._first_column(table, ("name", "full_name", "username", "email")),
+                        self._first_column(table, ("email",)),
+                        self._first_column(table, ("type", "user_type", "account_type")),
+                        self._first_column(table, ("status", "is_active")),
+                        self._first_column(table, ("created_at",)),
+                        self._first_column(table, ("updated_at",)),
+                    ] if column
+                ]
+                columns = list(dict.fromkeys(columns))
+                return self._tool_plan(
+                    "user_details",
+                    "select",
+                    "users",
+                    columns=columns,
+                    filters=[{"column": name_column, "operator": "contains", "value": lookup_value}],
+                    limit=1,
+                    extra={"entities": ["users"], "fields": columns, "lookup_value": lookup_value},
+                )
         if self._is_list(text) or any(ArabicNormalizer.contains_term(text, term) for term in self.NAME_TERMS):
             name_column = self._first_column(table, ("name", "full_name", "username", "email"))
             columns = [name_column] if name_column else []
@@ -280,6 +306,22 @@ class SchemaAwarePlanner:
             match = re.search(pattern, cleaned, re.IGNORECASE)
             if match:
                 return match.group(1)
+        return None
+
+    def _user_lookup_value(self, text: str) -> str | None:
+        cleaned = re.sub(r"[؟?؛،,]", " ", text).strip()
+        patterns = (
+            r"(?:المستخدم|مستخدم|user|account|الحساب|حساب)\s+(.{2,120})$",
+            r"(?:بيانات|معلومات|تفاصيل)\s+(?:المستخدم|مستخدم|user|account|الحساب|حساب)\s+(.{2,120})$",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, cleaned, re.IGNORECASE)
+            if not match:
+                continue
+            value = match.group(1).strip()
+            value = re.sub(r"\s+", " ", value)
+            if value:
+                return value
         return None
 
     def _project_code(self, message: str) -> str | None:

@@ -30,7 +30,7 @@ class SemanticCatalogService {
   private static final int MAX_TABLES_INDEX_IN_PROMPT = 80;
   private static final int MAX_DETAILED_TABLES_IN_PROMPT = 10;
   private static final int MAX_COLUMNS_IN_PROMPT = 12;
-  private static final int CATALOG_VERSION = 9;
+  private static final int CATALOG_VERSION = 10;
   private static final Set<String> CMS_TABLE_NAMES = Set.of(
     "about_us", "pages", "settings", "banners", "sliders", "menus", "menu_items", "cms_pages", "cms_blocks"
   );
@@ -675,7 +675,7 @@ class SemanticCatalogService {
   private static List<String> arabicSynonyms(String table) {
     if (table.contains("project")) return List.of("مشروع", "مشاريع");
     if (table.contains("client") || table.contains("customer")) return List.of("عميل", "عملاء");
-    if (table.contains("user")) return List.of("مستخدم", "مستخدمين");
+    if (table.contains("user")) return List.of("مستخدم", "المستخدم", "مستخدمين", "المستخدمين", "حساب", "حسابات");
     if (table.contains("invoice")) return List.of("فاتورة", "فواتير");
     if (table.contains("payment")) return List.of("مدفوعة", "مدفوعات");
     return List.of(table);
