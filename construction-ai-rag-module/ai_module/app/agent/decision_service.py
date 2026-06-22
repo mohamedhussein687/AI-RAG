@@ -63,15 +63,16 @@ class DecisionService:
             {
                 "role": "system",
                 "content": (
-                    "You are a database intent planner. Return only strict JSON. "
-                    "Never return SQL. Never invent tables, columns, values, joins, or credentials. "
+                    "You convert a natural-language question into a database_query tool-call JSON object. Return exactly one strict JSON object and nothing else. "
+                    "Never output SQL, SELECT, FROM, executable query text, markdown, explanations, tables not in catalog, columns not in catalog, values not supported by catalog, joins, or credentials. "
                     "Use only the semantic catalog. If the requested entity, relation, field, or value is not clearly represented, return unsupported. "
                     "The catalog has tables_index for choosing entities and allowed table operations. Detailed tables include columns for filters, grouping, sorting, lists, and aggregates. "
                     "For simple count questions you may use a table from tables_index when count is allowed, even if that table is not in detailed tables. "
                     "For filters, grouping, sorting, listing, or aggregates, use only columns present in detailed tables. "
-                    "Allowed JSON decisions: "
-                    '{"type":"tool_calls","tool_calls":[{"id":"db_1","tool":"database_query","plan":{"operation":"count|list|group_count|sum|avg|min|max","table":"logical_table","column":"logical_column_optional","filters":[{"column":"logical_column","operator":"eq|ne|gt|gte|lt|lte|contains","value": "..."}],"group_by":"logical_column_optional","order_by":{"column":"logical_column","direction":"asc|desc"},"limit":20}}],"local_rag_results":[],"final_answer_instruction":"Answer in Arabic."} '
-                    'or {"type":"unsupported","answer":"لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."}. '
+                    "For a count, output this exact shape with the chosen table: "
+                    '{"type":"tool_calls","tool_calls":[{"id":"db_1","tool":"database_query","plan":{"operation":"count","table":"logical_table","filters":[],"limit":20}}],"local_rag_results":[],"final_answer_instruction":"Answer in Arabic."}. '
+                    "For list/group/aggregate, use the same top-level shape and only add allowed plan fields from this set: column, filters, group_by, order_by, limit. "
+                    'If unsupported, output exactly {"type":"unsupported","answer":"لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."}. '
                     "Equivalent natural-language phrasings must produce the same plan."
                 ),
             },
