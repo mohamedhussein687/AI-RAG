@@ -15,6 +15,7 @@ from app.clients.llm_client import LlmClient
 import json
 import logging
 import re
+from pydantic import ValidationError
 
 SENSITIVE = ("password", "باسورد", "كلمة السر", "secret", "credential", "token")
 DOC_TERMS = ("إزاي", "how to", "policy", "سياسة", "procedure", "إجراء", "manual", "دليل", "contract", "عقد", "مستخلص")
@@ -79,6 +80,9 @@ class DecisionService:
         )
 
     async def _qwen_database_decision(self, request: AgentDecideRequest, arabic: bool):
+        route = await self._qwen_route_decision(request, arabic)
+        if route is not None:
+            return route
         messages = [
             {
                 "role": "system",
@@ -136,7 +140,54 @@ class DecisionService:
             log.info("agent_decision route=conversational intent=llm_final_answer selected_table=none operation=none reason=qwen_final_answer")
         else:
             log.info("agent_decision route=%s intent=llm_non_tool selected_table=none operation=none reason=qwen_decision", decision.get("type"))
-        return validate_decision(decision)
+        try:
+            return validate_decision(decision)
+        except ValidationError as exc:
+            reason = exc.errors()[0].get("type") if exc.errors() else "validation_error"
+            log.info("agent_decision route=unsupported intent=invalid_structured_plan selected_table=none operation=none reason=%s", reason)
+            return validate_decision(UnsupportedDecision(type="unsupported").model_dump())
+
+    async def _qwen_route_decision(self, request: AgentDecideRequest, arabic: bool):
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Classify the user's message before database planning. Return exactly one JSON object. "
+                    "Use route=conversational for greetings, wellbeing questions, thanks, identity/name/project-introduction, or small-talk. "
+                    "Use route=database_query only when the user asks for operational business data represented in the semantic catalog. "
+                    "Use route=unsupported when the user asks for business data whose entity or relationship is not present in the catalog. "
+                    "Never return SQL or credentials. For conversational route include a natural Arabic answer."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "question": request.message,
+                        "locale": request.locale,
+                        "semantic_catalog": request.semantic_catalog,
+                        "required_shape": {"route": "conversational|database_query|unsupported", "answer": "optional"},
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ]
+        route = await self.llm.chat_json(messages)
+        if not isinstance(route, dict) or "route" not in route:
+            return None
+        value = str(route.get("route"))
+        if value == "database_query":
+            log.info("agent_decision route=database_query intent=llm_routed_database selected_table=pending operation=pending reason=qwen_route")
+            return None
+        if value == "conversational":
+            answer = route.get("answer") if isinstance(route.get("answer"), str) and route.get("answer").strip() else (
+                "أنا بخير، وجاهز أساعدك في بيانات مشروع ORBIT." if arabic else "I'm doing well and ready to help with ORBIT data."
+            )
+            log.info("agent_decision route=conversational intent=small_talk selected_table=none operation=none reason=qwen_route")
+            return validate_decision(FinalAnswerDecision(type="final_answer", answer=answer, display=Display(type="text"), sources=[]).model_dump())
+        answer = route.get("answer") if isinstance(route.get("answer"), str) and route.get("answer").strip() else "لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."
+        log.info("agent_decision route=unsupported intent=unsupported_business_question selected_table=none operation=none reason=qwen_route")
+        return validate_decision(UnsupportedDecision(type="unsupported", answer=answer).model_dump())
 
     def _deterministic_database_guard(self, request: AgentDecideRequest):
         if not self._is_project_count(request.message):
