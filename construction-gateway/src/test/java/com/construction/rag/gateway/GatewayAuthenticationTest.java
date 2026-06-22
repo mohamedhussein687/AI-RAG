@@ -131,7 +131,36 @@ class GatewayAuthenticationTest {
       JsonNode body = JSON.readTree(request.getBody().readUtf8());
       assertThat(body.get("user_context").get("tenant_id").asText()).isEqualTo("smoke-tenant");
       assertThat(body.has("external_tools")).isTrue();
+      assertThat(body.get("external_tools").get(0).get("name").asText()).isEqualTo("database_query");
+      assertThat(body.get("semantic_catalog").get("client_name").asText()).isEqualTo("smoke-tenant");
       assertThat(body.has("local_tools")).isTrue();
+    }
+  }
+
+  @Test
+  void publicChatAdvertisesDatabasePlanningToAiModule() throws Exception {
+    try (MockWebServer ai = new MockWebServer()) {
+      ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("""
+        {"type":"final_answer","route":"database_query","requires_database":true,"requires_context":true,"answer":"لم يتم تجهيز فهرس قاعدة البيانات بعد. شغّل schema-ingest أولًا أو تحقق من إعدادات MYSQL.","display":{"type":"text","data":{"error":"schema_not_ready_or_mapping_missing"}},"sources":[]}
+        """));
+      ai.start(InetAddress.getByName("127.0.0.1"), 0);
+      RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props(ai.url("/").toString(), "internal-ai-token")), null, null, null);
+      ServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/api/chat").build());
+      exchange.getAttributes().put(BearerTokenFilter.IDENTITY_ATTR, identity());
+
+      Object response = controller.chat(Map.of("message", "من الادمن في هذا النظام"), exchange).block();
+      RecordedRequest decide = ai.takeRequest(2, TimeUnit.SECONDS);
+
+      assertThat(response).isInstanceOf(Map.class);
+      assertThat(((Map<?, ?>) response).get("route")).isEqualTo("database_query");
+      assertThat(((Map<?, ?>) response).get("requires_database")).isEqualTo(true);
+      assertThat(decide).isNotNull();
+      assertThat(decide.getPath()).isEqualTo("/api/agent/decide");
+      JsonNode decideBody = JSON.readTree(decide.getBody().readUtf8());
+      assertThat(decideBody.get("message").asText()).isEqualTo("من الادمن في هذا النظام");
+      assertThat(decideBody.get("external_tools").get(0).get("name").asText()).isEqualTo("database_query");
+      assertThat(decideBody.get("semantic_catalog").get("client_name").asText()).isEqualTo("smoke-tenant");
+      assertThat(decideBody.get("local_tools").get(0).get("name").asText()).isEqualTo("knowledge_search");
     }
   }
 
