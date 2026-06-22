@@ -226,6 +226,8 @@ class GatewayAuthenticationTest {
     SemanticCatalogService service = new SemanticCatalogService(jdbc, null, JSON);
     SemanticCatalog catalog = new SemanticCatalog("orbit", 3, "now", "hash", true, List.of(
       new CatalogTable("about_us", "about_us", "about u", List.of(), List.of("about_us"), List.of(), List.of("count"), false, 1),
+      new CatalogTable("about_us_translations", "about_us_translations", "about u translation", List.of(), List.of("about_us_translations"), List.of(), List.of("count"), false, 1),
+      new CatalogTable("app_settings", "app_settings", "settings", List.of(), List.of("app_settings"), List.of(), List.of("count"), false, 1),
       new CatalogTable("projects", "projects", "project", List.of("مشروع", "مشاريع"), List.of("projects", "project"),
         List.of(new CatalogColumn("status", "project_status", "string", true, List.of("filter", "group"), List.of("waiting"), false, true)),
         List.of("count", "group_count"), true, 1757)
@@ -236,6 +238,8 @@ class GatewayAuthenticationTest {
     assertThat(prompt.toString()).contains("domain_entities");
     assertThat(prompt.toString()).contains("projects");
     assertThat(prompt.toString()).doesNotContain("about_us");
+    assertThat(prompt.toString()).doesNotContain("about_us_translations");
+    assertThat(prompt.toString()).doesNotContain("app_settings");
   }
 
   private static BearerTokenFilter filter(Jwt jwt) {

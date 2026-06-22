@@ -30,7 +30,7 @@ class SemanticCatalogService {
   private static final int MAX_TABLES_INDEX_IN_PROMPT = 80;
   private static final int MAX_DETAILED_TABLES_IN_PROMPT = 10;
   private static final int MAX_COLUMNS_IN_PROMPT = 12;
-  private static final int CATALOG_VERSION = 7;
+  private static final int CATALOG_VERSION = 8;
   private static final Set<String> CMS_TABLE_NAMES = Set.of(
     "about_us", "pages", "settings", "banners", "sliders", "menus", "menu_items", "cms_pages", "cms_blocks"
   );
@@ -295,10 +295,15 @@ class SemanticCatalogService {
   private static boolean cmsContentTable(String table) {
     String t = table.toLowerCase(Locale.ROOT);
     return CMS_TABLE_NAMES.contains(t)
-      || t.startsWith("web_")
-      || t.startsWith("cms_")
+      || t.contains("about_us")
+      || t.contains("setting")
       || t.contains("banner")
       || t.contains("slider")
+      || t.contains("menu")
+      || t.contains("content")
+      || t.contains("blog")
+      || t.startsWith("web_")
+      || t.startsWith("cms_")
       || t.contains("page")
       || t.contains("content");
   }
