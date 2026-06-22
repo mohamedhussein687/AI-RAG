@@ -33,7 +33,11 @@ class FinalAnswerService:
             prefix = "حسب المستندات المتاحة:" if arabic else "Based on the available documents:"
             answer = answer_with_citations(prefix, request.local_rag_results)
         elif has_db:
-            answer = await self._qwen_database_answer(request, arabic)
+            no_rows_answer = self._empty_delayed_report_answer(request, arabic)
+            if no_rows_answer:
+                answer = no_rows_answer
+            else:
+                answer = await self._qwen_database_answer(request, arabic)
         else:
             answer = "لا توجد نتائج كافية للإجابة." if arabic else "There is not enough evidence to answer."
 
@@ -77,7 +81,10 @@ class FinalAnswerService:
                         "locale": request.locale,
                         "query_results": [r.result for r in request.tool_results],
                         "instruction": request.final_answer_instruction,
-                        "style": "natural conversational Arabic; include thousands separators for large numbers when useful",
+                        "style": (
+                            "natural conversational Arabic; include thousands separators for large numbers when useful. "
+                            "For delayed_projects_report, format as a short Arabic report with title, total results, and for each project: name, status, planned delivery date, delay days if present, and last update if present."
+                        ),
                     },
                     ensure_ascii=False,
                 ),
@@ -88,3 +95,10 @@ class FinalAnswerService:
         if isinstance(answer, str) and answer.strip():
             return answer.strip()
         return self._summarize_tool_results(request, arabic)
+
+    def _empty_delayed_report_answer(self, request: AgentFinalRequest, arabic: bool) -> str | None:
+        for result in request.tool_results:
+            payload = result.result
+            if isinstance(payload, dict) and payload.get("intent") == "delayed_projects_report" and payload.get("rows") == []:
+                return "لا توجد مشاريع متأخرة في التسليم حسب البيانات الحالية." if arabic else "There are no delayed projects based on the current data."
+        return None

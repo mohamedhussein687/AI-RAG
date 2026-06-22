@@ -11,6 +11,7 @@ import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import javax.sql.DataSource;
@@ -62,5 +63,66 @@ class SafeDatabaseQueryServiceTest {
     ArgumentCaptor<Object> value = ArgumentCaptor.forClass(Object.class);
     verify(statement).setObject(eq(1), value.capture());
     assertThat(value.getValue()).isEqualTo("waiting");
+  }
+
+  @Test
+  void delayedProjectsReportUsesProjectsDeadlineAndCompletionFields() throws Exception {
+    ClientDataSourceManager manager = mock(ClientDataSourceManager.class);
+    DataSource dataSource = mock(DataSource.class);
+    Connection connection = mock(Connection.class);
+    DatabaseMetaData metaData = mock(DatabaseMetaData.class);
+    ResultSet tables = mock(ResultSet.class);
+    PreparedStatement statement = mock(PreparedStatement.class);
+    ResultSet queryResult = mock(ResultSet.class);
+    SemanticCatalogService catalogs = mock(SemanticCatalogService.class);
+    RagClient orbit = new RagClient(7, "orbit", "mysql", "db", 3306, "orbit", "user", "encrypted", "active");
+
+    when(manager.dataSource(orbit)).thenReturn(dataSource);
+    when(dataSource.getConnection()).thenReturn(connection);
+    when(connection.getCatalog()).thenReturn("testorbit");
+    when(connection.getMetaData()).thenReturn(metaData);
+    when(metaData.getTables(eq("testorbit"), any(), eq("projects"), any())).thenReturn(tables);
+    when(tables.next()).thenReturn(true);
+    when(metaData.getColumns(eq("testorbit"), any(), eq("projects"), any())).thenAnswer(invocation -> {
+      ResultSet rs = mock(ResultSet.class);
+      when(rs.next()).thenReturn(true);
+      return rs;
+    });
+    when(connection.prepareStatement("select title as title, project_status as status, last_plan_finish_date as planned_delivery_date, actual_date as actual_delivery_date, is_finished as is_finished, updated_at as updated_at from projects where last_plan_finish_date < ? and is_finished = ? order by updated_at desc limit 4")).thenReturn(statement);
+    when(statement.executeQuery()).thenReturn(queryResult);
+    when(queryResult.next()).thenReturn(false);
+    when(catalogs.catalog(orbit)).thenReturn(new SemanticCatalog("orbit", 4, "now", "hash", true, List.of(new CatalogTable(
+      "projects", "projects", "project", List.of("مشروع", "مشاريع"), List.of("projects", "project"),
+      List.of(
+        new CatalogColumn("title", "title", "string", true, List.of("filter", "sort", "group"), List.of(), false, true),
+        new CatalogColumn("status", "project_status", "number", true, List.of("filter", "sort", "group"), List.of(), false, true),
+        new CatalogColumn("planned_delivery_date", "last_plan_finish_date", "date", true, List.of("filter", "sort", "group"), List.of(), false, true),
+        new CatalogColumn("actual_delivery_date", "actual_date", "string", true, List.of("filter", "sort", "group"), List.of(), false, true),
+        new CatalogColumn("is_finished", "is_finished", "number", true, List.of("filter", "sort", "group"), List.of("0", "1"), false, true),
+        new CatalogColumn("updated_at", "updated_at", "date", true, List.of("filter", "sort", "group"), List.of(), false, true)
+      ),
+      List.of("count", "list", "select", "group_count"), true, 0
+    ))));
+
+    SafeDatabaseQueryService service = new SafeDatabaseQueryService(manager, catalogs);
+    Map<String, Object> result = service.execute(orbit, Map.of(
+      "plan", Map.of(
+        "intent", "delayed_projects_report",
+        "operation", "select",
+        "table", "projects",
+        "columns", List.of("title", "status", "planned_delivery_date", "actual_delivery_date", "is_finished", "updated_at"),
+        "filters", List.of(
+          Map.of("column", "planned_delivery_date", "operator", "lt", "value", "today"),
+          Map.of("column", "is_finished", "operator", "not_completed", "value", false)
+        ),
+        "order_by", Map.of("column", "updated_at", "direction", "desc"),
+        "limit", 4
+      )
+    )).block();
+
+    assertThat(result).containsEntry("intent", "delayed_projects_report");
+    assertThat(result).containsEntry("table", "projects");
+    verify(statement).setObject(eq(1), org.mockito.ArgumentMatchers.isA(LocalDate.class));
+    verify(statement).setObject(eq(2), eq(0));
   }
 }

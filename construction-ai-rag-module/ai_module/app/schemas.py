@@ -2,7 +2,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 DisplayType = Literal["text", "metric", "table", "answer_with_sources", "mixed", "clarification"]
-DbOperation = Literal["count", "list", "sum", "avg", "min", "max", "group_count"]
+DbOperation = Literal["count", "list", "select", "sum", "avg", "min", "max", "group_count"]
 
 
 class StrictModel(BaseModel):
@@ -78,7 +78,7 @@ class RagChunk(StrictModel):
 
 class DatabaseFilter(StrictModel):
     column: str
-    operator: Literal["eq", "ne", "gt", "gte", "lt", "lte", "in", "contains"]
+    operator: Literal["eq", "ne", "gt", "gte", "lt", "lte", "in", "contains", "is_null", "not_completed"]
     value: Any
 
 
@@ -88,9 +88,11 @@ class OrderBy(StrictModel):
 
 
 class DatabaseQueryPlan(StrictModel):
+    intent: str | None = None
     operation: DbOperation
     table: str
     column: str | None = None
+    columns: list[str] = Field(default_factory=list)
     filters: list[DatabaseFilter] = Field(default_factory=list)
     order_by: OrderBy | None = None
     group_by: str | None = None

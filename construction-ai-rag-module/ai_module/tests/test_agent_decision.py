@@ -39,21 +39,43 @@ def invoice_catalog():
 
 def project_catalog_with_cms_table():
     return {
-        "catalog_version": 3,
+        "catalog_version": 4,
         "schema_hash": "test",
         "domain_entities": [
-            {"entity": "projects", "table": "projects", "purpose": "operational construction projects", "count_operation": "count"}
+            {
+                "entity": "projects",
+                "table": "projects",
+                "purpose": "operational construction projects",
+                "count_operation": "count",
+                "delayed_projects_report": {
+                    "enabled": True,
+                    "intent": "delayed_projects_report",
+                    "operation": "select",
+                    "table": "projects",
+                    "title_field": "title",
+                    "deadline_field": "planned_delivery_date",
+                    "completion_field": "is_finished",
+                    "status_field": "status",
+                    "order_field": "updated_at",
+                    "default_limit": 4,
+                },
+            }
         ],
         "tables_index": [
             {"name": "about_us", "allowed_operations": ["count", "list"]},
-            {"name": "projects", "allowed_operations": ["count", "list", "group_count"]},
+            {"name": "projects", "allowed_operations": ["count", "list", "select", "group_count"]},
         ],
         "tables": [
             {
                 "name": "projects",
-                "allowed_operations": ["count", "list", "group_count"],
+                "allowed_operations": ["count", "list", "select", "group_count"],
                 "columns": [
                     {"name": "status", "type": "string", "operations": ["filter", "group"], "enum_values": ["waiting"]},
+                    {"name": "title", "type": "string", "operations": ["filter", "sort"], "enum_values": []},
+                    {"name": "planned_delivery_date", "type": "date", "operations": ["filter", "sort"], "enum_values": []},
+                    {"name": "actual_delivery_date", "type": "string", "operations": ["filter", "sort"], "enum_values": []},
+                    {"name": "is_finished", "type": "number", "operations": ["filter", "sort", "group"], "enum_values": [0, 1]},
+                    {"name": "updated_at", "type": "date", "operations": ["filter", "sort", "group"], "enum_values": []},
                     {"name": "created_at", "type": "date", "operations": ["filter", "sort", "group"], "enum_values": []},
                 ],
             }
@@ -142,6 +164,32 @@ def test_project_count_uses_authoritative_projects_table_not_about_us(client, au
         assert plan["operation"] == "count"
         assert plan["table"] == "projects"
         assert plan["table"] != "about_us"
+
+
+def test_delayed_projects_report_uses_projects_table_limit_and_latest_order(client, auth_headers, monkeypatch):
+    async def should_not_call_qwen(self, messages):
+        raise AssertionError("delayed_projects_report guard should run before LLM table selection")
+
+    monkeypatch.setattr(LlmClient, "chat_json", should_not_call_qwen)
+    questions = [
+        "هل يمكنك اعطائي تقرير باخر اربع مشاريع متأخرين في التسليم",
+        "هات آخر 4 مشاريع متأخرة",
+        "المشاريع المتأخرة في التسليم",
+    ]
+    for question in questions:
+        response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload(question, semantic_catalog=project_catalog_with_cms_table()))
+        assert response.status_code == 200
+        data = response.json()
+        assert data["type"] == "tool_calls"
+        plan = data["tool_calls"][0]["plan"]
+        assert plan["intent"] == "delayed_projects_report"
+        assert plan["operation"] == "select"
+        assert plan["table"] == "projects"
+        assert plan["table"] != "about_us"
+        assert plan["limit"] == 4
+        assert plan["order_by"] == {"column": "updated_at", "direction": "desc"}
+        assert {"column": "planned_delivery_date", "operator": "lt", "value": "today"} in plan["filters"]
+        assert {"column": "is_finished", "operator": "not_completed", "value": False} in plan["filters"]
 
 
 def test_equivalent_invoice_questions_generate_same_plan(client, auth_headers, monkeypatch):

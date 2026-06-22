@@ -3,6 +3,10 @@ package com.construction.rag.gateway;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.Date;
+import java.sql.Timestamp;
+import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -46,7 +50,8 @@ class SafeDatabaseQueryService {
     String where = buildWhere(filters, catalogTable, params);
     int limit = limit(plan.get("limit"));
     String sql = buildSql(operation, plan, catalogTable, where, limit);
-    log.info("safe_database_query operation={} selected_table={} physical_table={} reason=validated_catalog_plan", operation, table, catalogTable.physicalName());
+    log.info("safe_database_query operation={} selected_table={} physical_table={} filters={} limit={} sql_template={} reason=validated_catalog_plan",
+      operation, table, catalogTable.physicalName(), filters.size(), limit, sql);
     DataSource dataSource = dataSources.dataSource(client);
     try (Connection connection = dataSource.getConnection()) {
       connection.setReadOnly(true);
@@ -76,7 +81,7 @@ class SafeDatabaseQueryService {
         if (!column.allowedOperations().contains(operation)) throw new IllegalArgumentException("aggregate column is not allowlisted");
         yield "select " + operation + "(" + column.physicalName() + ") as " + operation + " from " + physicalTable + where;
       }
-      case "list" -> {
+      case "list", "select" -> {
         List<CatalogColumn> columns = selectedColumns(table, plan.get("columns"));
         String order = "";
         if (plan.get("order_by") instanceof Map<?, ?> orderBy) {
@@ -107,14 +112,21 @@ class SafeDatabaseQueryService {
         while (rs.next()) rows.add(Map.of("value", String.valueOf(rs.getObject("value")), "count", rs.getLong("count")));
         yield Map.of("operation", operation, "table", table.logicalName(), "group_by", String.valueOf(plan.get("group_by")), "rows", rows);
       }
-      case "list" -> {
+      case "list", "select" -> {
         List<Map<String, Object>> rows = new ArrayList<>();
         while (rs.next()) {
           Map<String, Object> row = new LinkedHashMap<>();
           for (CatalogColumn column : selectedColumns(table, plan.get("columns"))) row.put(column.logicalName(), rs.getObject(column.logicalName()));
+          addDelayDays(row);
           rows.add(row);
         }
-        yield Map.of("operation", operation, "table", table.logicalName(), "rows", rows);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("operation", operation);
+        Object intent = plan.get("intent");
+        result.put("intent", intent == null ? "" : String.valueOf(intent));
+        result.put("table", table.logicalName());
+        result.put("rows", rows);
+        yield result;
       }
       default -> throw new IllegalArgumentException("unsupported operation");
     };
@@ -153,22 +165,29 @@ class SafeDatabaseQueryService {
         case "eq" -> {
           validateValueType(column, value);
           clauses.add(column.physicalName() + " = ?");
-          params.add(value);
+          params.add(parameterValue(column, value));
         }
         case "ne" -> {
           validateValueType(column, value);
           clauses.add(column.physicalName() + " <> ?");
-          params.add(value);
+          params.add(parameterValue(column, value));
         }
         case "gt", "gte", "lt", "lte" -> {
           if (!column.fieldType().equals("number") && !column.fieldType().equals("date")) throw new IllegalArgumentException("range filter is not allowed for this column");
+          validateValueType(column, value);
           clauses.add(column.physicalName() + " " + rangeOperator(operator) + " ?");
-          params.add(value);
+          params.add(parameterValue(column, value));
         }
         case "contains" -> {
           if (!column.fieldType().equals("string")) throw new IllegalArgumentException("contains filter is not allowed for this column");
           clauses.add(column.physicalName() + " like ?");
           params.add("%" + value + "%");
+        }
+        case "is_null" -> clauses.add(column.physicalName() + " is null");
+        case "not_completed" -> {
+          if (!"is_finished".equals(column.logicalName()) && !"status".equals(column.logicalName())) throw new IllegalArgumentException("not_completed filter is not allowed for this column");
+          clauses.add(column.physicalName() + " = ?");
+          params.add(0);
         }
         default -> throw new IllegalArgumentException("filter operator is not allowlisted");
       }
@@ -187,6 +206,7 @@ class SafeDatabaseQueryService {
   }
 
   private void validateValueType(CatalogColumn column, Object value) {
+    if ("date".equals(column.fieldType()) && "today".equalsIgnoreCase(String.valueOf(value))) return;
     if ("number".equals(column.fieldType()) && !(value instanceof Number)) {
       try {
         Double.parseDouble(String.valueOf(value));
@@ -194,6 +214,11 @@ class SafeDatabaseQueryService {
         throw new IllegalArgumentException("filter value is not compatible with numeric column: " + column.logicalName());
       }
     }
+  }
+
+  private Object parameterValue(CatalogColumn column, Object value) {
+    if ("date".equals(column.fieldType()) && "today".equalsIgnoreCase(String.valueOf(value))) return LocalDate.now();
+    return value;
   }
 
   private CatalogColumn requiredColumn(CatalogTable table, Object value, String name) {
@@ -207,7 +232,7 @@ class SafeDatabaseQueryService {
     if (!(value instanceof List<?> requested) || requested.isEmpty()) {
       return table.columns().stream()
         .filter(c -> c.enabled() && !c.sensitive())
-        .filter(c -> List.of("name", "title", "status", "type", "created_at", "updated_at").contains(c.logicalName()))
+        .filter(c -> List.of("name", "title", "status", "type", "planned_delivery_date", "actual_delivery_date", "is_finished", "created_at", "updated_at").contains(c.logicalName()))
         .limit(6)
         .toList();
     }
@@ -238,6 +263,26 @@ class SafeDatabaseQueryService {
     String id = string(value).toLowerCase(Locale.ROOT);
     if (!id.matches("[a-z_][a-z0-9_]*")) throw new IllegalArgumentException("invalid identifier");
     return id;
+  }
+
+  private void addDelayDays(Map<String, Object> row) {
+    Object value = row.get("planned_delivery_date");
+    LocalDate planned = toLocalDate(value);
+    if (planned == null) return;
+    long days = ChronoUnit.DAYS.between(planned, LocalDate.now());
+    if (days > 0) row.put("days_delay", days);
+  }
+
+  private LocalDate toLocalDate(Object value) {
+    if (value instanceof LocalDate d) return d;
+    if (value instanceof Date d) return d.toLocalDate();
+    if (value instanceof Timestamp t) return t.toLocalDateTime().toLocalDate();
+    if (value instanceof java.util.Date d) return new java.sql.Date(d.getTime()).toLocalDate();
+    try {
+      return value == null ? null : LocalDate.parse(String.valueOf(value));
+    } catch (Exception ignored) {
+      return null;
+    }
   }
 
   private record TableAllowlist(List<String> columns, List<String> operations) {}

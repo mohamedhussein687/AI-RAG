@@ -22,6 +22,8 @@ DOC_TERMS = ("إزاي", "how to", "policy", "سياسة", "procedure", "إجر�
 DELAY_TERMS = ("متأخر", "delayed", "delay")
 PROJECT_TERMS = ("مشروع", "مشاريع", "المشاريع", "project", "projects")
 COUNT_TERMS = ("كم", "عدد", "count", "how many", "total")
+DELAY_REPORT_TERMS = ("متاخر", "متاخرين", "متاخره", "تأخير", "تاخير", "delayed", "late")
+DELIVERY_TERMS = ("تسليم", "delivery", "deadline", "end date")
 log = logging.getLogger(__name__)
 
 
@@ -190,6 +192,9 @@ class DecisionService:
         return validate_decision(UnsupportedDecision(type="unsupported", answer=answer).model_dump())
 
     def _deterministic_database_guard(self, request: AgentDecideRequest):
+        delayed = self._delayed_projects_report_guard(request)
+        if delayed:
+            return delayed
         if not self._is_project_count(request.message):
             return None
         table = self._domain_table(request.semantic_catalog, "projects")
@@ -211,15 +216,84 @@ class DecisionService:
             "final_answer_instruction": self._instruction(prefer_arabic(request.message, request.locale)),
         }
 
+    def _delayed_projects_report_guard(self, request: AgentDecideRequest):
+        if not self._is_delayed_projects_report(request.message):
+            return None
+        report = self._domain_report(request.semantic_catalog, "projects", "delayed_projects_report")
+        if not report or not report.get("enabled"):
+            missing = ", ".join(report.get("missing_fields", [])) if isinstance(report, dict) else "delayed_projects_report"
+            log.info("agent_decision route=unsupported intent=delayed_projects_report selected_table=projects operation=select reason=missing_report_mapping missing=%s", missing)
+            return {
+                "type": "unsupported",
+                "answer": f"لا أستطيع إعداد تقرير المشاريع المتأخرة لأن إعدادات خريطة البيانات ناقصة: {missing}.",
+            }
+        table = report.get("table")
+        deadline = report.get("deadline_field")
+        completion = report.get("completion_field")
+        order_field = report.get("order_field")
+        title = report.get("title_field")
+        status = report.get("status_field")
+        if not all([table, deadline, completion, order_field, title]):
+            return {"type": "unsupported", "answer": "لا أستطيع إعداد تقرير المشاريع المتأخرة لأن حقول التقرير المطلوبة غير مكتملة في خريطة البيانات."}
+        columns = [title, status, deadline, completion, "actual_delivery_date", order_field]
+        columns = list(dict.fromkeys([c for c in columns if c]))
+        return {
+            "type": "tool_calls",
+            "intent": "delayed_projects_report",
+            "reason": "deterministic_domain_entity_guard",
+            "tool_calls": [
+                {
+                    "id": "db_1",
+                    "tool": "database_query",
+                    "plan": {
+                        "intent": "delayed_projects_report",
+                        "operation": "select",
+                        "table": table,
+                        "columns": columns,
+                        "filters": [
+                            {"column": deadline, "operator": "lt", "value": "today"},
+                            {"column": completion, "operator": "not_completed", "value": False},
+                        ],
+                        "order_by": {"column": order_field, "direction": "desc"},
+                        "limit": self._requested_limit(request.message, int(report.get("default_limit", 4))),
+                    },
+                }
+            ],
+            "local_rag_results": [],
+            "final_answer_instruction": self._instruction(prefer_arabic(request.message, request.locale)),
+        }
+
     def _is_project_count(self, message: str) -> bool:
         text = self._normalize(message)
         return any(term in text for term in PROJECT_TERMS) and any(term in text for term in COUNT_TERMS)
+
+    def _is_delayed_projects_report(self, message: str) -> bool:
+        text = self._normalize(message)
+        return any(term in text for term in PROJECT_TERMS) and any(term in text for term in DELAY_REPORT_TERMS) and (
+            any(term in text for term in DELIVERY_TERMS) or "اخر" in text or "آخر" in message
+        )
 
     def _domain_table(self, catalog: dict, entity: str) -> str | None:
         for item in catalog.get("domain_entities", []):
             if item.get("entity") == entity and item.get("count_operation") == "count":
                 return item.get("table")
         return None
+
+    def _domain_report(self, catalog: dict, entity: str, report_name: str) -> dict | None:
+        for item in catalog.get("domain_entities", []):
+            if item.get("entity") == entity:
+                report = item.get(report_name)
+                return report if isinstance(report, dict) else None
+        return None
+
+    def _requested_limit(self, message: str, default: int) -> int:
+        text = self._normalize(message)
+        match = re.search(r"\b([1-9][0-9]?)\b", text)
+        if match:
+            return min(max(int(match.group(1)), 1), 20)
+        if "اربع" in text or "اربعه" in text:
+            return 4
+        return min(max(default, 1), 20)
 
     def _normalize(self, value: str) -> str:
         text = value.lower()

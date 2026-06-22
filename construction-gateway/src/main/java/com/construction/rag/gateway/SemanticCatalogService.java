@@ -26,7 +26,7 @@ class SemanticCatalogService {
   private static final int MAX_TABLES_INDEX_IN_PROMPT = 80;
   private static final int MAX_DETAILED_TABLES_IN_PROMPT = 10;
   private static final int MAX_COLUMNS_IN_PROMPT = 12;
-  private static final int CATALOG_VERSION = 3;
+  private static final int CATALOG_VERSION = 4;
   private static final Set<String> CMS_TABLE_NAMES = Set.of(
     "about_us", "pages", "settings", "banners", "sliders", "menus", "menu_items", "cms_pages", "cms_blocks"
   );
@@ -276,18 +276,53 @@ class SemanticCatalogService {
     List<Map<String, Object>> entities = new ArrayList<>();
     CatalogTable projects = catalog.table("projects");
     if (projects != null) {
-      entities.add(Map.of(
+      Map<String, Object> projectEntity = new LinkedHashMap<>(Map.of(
         "entity", "projects",
         "table", projects.logicalName(),
         "purpose", "operational construction projects",
         "count_operation", "count",
         "reason", "real Laravel operational project table"
       ));
+      Map<String, Object> delayedReport = delayedProjectsReport(projects);
+      if (!delayedReport.isEmpty()) projectEntity.put("delayed_projects_report", delayedReport);
+      entities.add(projectEntity);
     }
     return List.copyOf(entities);
   }
 
+  private static Map<String, Object> delayedProjectsReport(CatalogTable projects) {
+    CatalogColumn title = projects.column("title");
+    CatalogColumn planned = projects.column("planned_delivery_date");
+    CatalogColumn completion = projects.column("is_finished");
+    CatalogColumn status = projects.column("status");
+    CatalogColumn updated = projects.column("updated_at");
+    if (title == null || planned == null || completion == null || updated == null) return Map.of(
+      "enabled", false,
+      "missing_fields", missing("title", title, "planned_delivery_date", planned, "is_finished", completion, "updated_at", updated)
+    );
+    return Map.of(
+      "enabled", true,
+      "intent", "delayed_projects_report",
+      "operation", "select",
+      "table", projects.logicalName(),
+      "title_field", title.logicalName(),
+      "deadline_field", planned.logicalName(),
+      "completion_field", completion.logicalName(),
+      "status_field", status == null ? completion.logicalName() : status.logicalName(),
+      "order_field", updated.logicalName(),
+      "default_limit", 4
+    );
+  }
+
+  private static List<String> missing(Object... pairs) {
+    List<String> out = new ArrayList<>();
+    for (int i = 0; i < pairs.length; i += 2) if (pairs[i + 1] == null) out.add(String.valueOf(pairs[i]));
+    return List.copyOf(out);
+  }
+
   private static String logicalColumn(String table, String column, Set<String> used) {
+    if ("projects".equals(table) && "last_plan_finish_date".equals(column)) return unused("planned_delivery_date", used);
+    if ("projects".equals(table) && "actual_date".equals(column)) return unused("actual_delivery_date", used);
     String singular = singular(table);
     if (column.equals(singular + "_status")) return unused("status", used);
     if (column.equals(singular + "_type")) return unused("type", used);
@@ -324,7 +359,7 @@ class SemanticCatalogService {
   }
 
   private static List<String> tableOperations(List<CatalogColumn> columns) {
-    List<String> ops = new ArrayList<>(List.of("count", "list"));
+    List<String> ops = new ArrayList<>(List.of("count", "list", "select"));
     if (columns.stream().anyMatch(c -> c.enabled() && c.allowedOperations().contains("group"))) ops.add("group_count");
     if (columns.stream().anyMatch(c -> c.enabled() && c.allowedOperations().contains("sum"))) ops.add("sum");
     if (columns.stream().anyMatch(c -> c.enabled() && c.allowedOperations().contains("avg"))) ops.add("avg");
