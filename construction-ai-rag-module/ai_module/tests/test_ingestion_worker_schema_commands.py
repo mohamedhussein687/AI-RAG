@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.db.mysql import MySqlConnectionError
 from ingestion_worker.schema_commands import format_schema_status, run_schema_command
 
 
@@ -44,3 +45,17 @@ async def test_schema_command_invokes_service(monkeypatch):
     assert await run_schema_command("schema-ingest", source="construction_mysql", force=True, as_json=True) == 0
     assert await run_schema_command("schema-status", source="construction_mysql", force=False, as_json=False) == 0
     assert calls == [("ingest", "construction_mysql", True), ("status", "construction_mysql", False)]
+
+
+@pytest.mark.asyncio
+async def test_schema_command_reports_mysql_configuration_errors_without_traceback(monkeypatch, capsys):
+    class FakeService:
+        async def ingest_current(self, source: str, force: bool = False):
+            raise MySqlConnectionError("MySQL configuration is incomplete: MYSQL_HOST")
+
+    monkeypatch.setattr("ingestion_worker.schema_commands.SchemaService", lambda settings: FakeService())
+
+    assert await run_schema_command("schema-ingest", source="construction_mysql", force=False, as_json=False) == 2
+    rendered = capsys.readouterr().out
+    assert "status=failed" in rendered
+    assert "MYSQL_HOST" in rendered

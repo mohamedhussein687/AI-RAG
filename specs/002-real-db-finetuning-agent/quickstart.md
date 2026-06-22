@@ -185,7 +185,7 @@ AI module focused Phase 8 tests:
 
 AI module full tests:
   .venv/bin/python -m pytest -q
-  Result: 124 passed, 1 warning
+  Result: 125 passed, 1 warning
 
 Spring Gateway tests:
   ./mvnw test
@@ -206,6 +206,50 @@ Backup restore was not executed during this local validation because no local
 approved backup path was used in this phase. The restore command itself was
 validated through mocked tests for path refusal, password redaction, MySQL
 command construction, and error handling.
+
+Latest Phase 8 GitHub/server validation, recorded 2026-06-23:
+
+```text
+GitHub push:
+  Branch: feature/real-db-finetuning-agent
+  Commit pushed: 441b4d5bb47ddfd53251dc5027126230e126c32b
+  Repository: github.com:mohamedhussein687/AI-RAG.git
+
+Server pull:
+  ssh techlab-ai
+  Path: /home/rag/AI-RAG
+  Branch: feature/real-db-finetuning-agent
+  Commit pulled: 441b4d5bb47ddfd53251dc5027126230e126c32b
+
+Server focused tests:
+  .venv/bin/python -m pytest tests/test_repository_hygiene.py tests/test_restore_backup.py -q
+  Result: 7 passed, 1 warning
+
+Server restore:
+  .venv/bin/python -m ingestion_worker restore-backup --file /home/rag/backup.sql --database construction_ai_dev
+  Result: blocked safely; MYSQL_HOST and MYSQL_USER are not configured for a safe construction_ai_dev restore target.
+
+Server schema status:
+  .venv/bin/python -m ingestion_worker schema-status --source construction_mysql --json
+  Result: status=missing, table_count=0, column_count=0
+
+Server schema ingest:
+  .venv/bin/python -m ingestion_worker schema-ingest --source construction_mysql
+  Result: blocked; MySQL configuration is incomplete for MYSQL_HOST, MYSQL_DATABASE, MYSQL_USER.
+
+Server smoke chat:
+  .venv/bin/python -m ingestion_worker smoke-chat --message "انت كويس؟"
+  Result: route=conversational; Arabic wellbeing answer returned.
+
+  .venv/bin/python -m ingestion_worker smoke-chat --message "اعرض جميع اسماء المستخدمين"
+  .venv/bin/python -m ingestion_worker smoke-chat --message "اريد بيانات المستخدم Ayman Ibrahim El Sayed"
+  .venv/bin/python -m ingestion_worker smoke-chat --message "كام مشروع عندي؟"
+  Result: route=clarification because schema/database restore is not configured on the server validation workspace.
+```
+
+Server validation did not modify `/home/rag/backup.sql`. A real server restore
+requires a safe local/server `MYSQL_*` restore target for `construction_ai_dev`;
+the existing ORBIT production database variables were not reused for restore.
 
 ## 12. Commit and Push
 

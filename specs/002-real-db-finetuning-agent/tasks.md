@@ -216,9 +216,9 @@
 - [X] T085 [US6] Document GitHub push then server pull workflow in `construction-ai-rag-module/ai_module/docs/server-deployment.md`
 - [X] T086 [US6] Update `construction-ai-rag-module/README.md` with links to database-aware agent, fine-tuning, restore, and server deployment docs
 - [X] T087 [US6] Run local tests and record command/results in `specs/002-real-db-finetuning-agent/quickstart.md`
-- [ ] T088 [US6] Commit local changes and push `feature/real-db-finetuning-agent` to GitHub repository `mohamedhussein687/AI-RAG`
-- [ ] T089 [US6] Pull pushed branch under `/home/rag/AI-RAG` on `ssh techlab-ai` without copying uncommitted files and record the pulled SHA in `specs/002-real-db-finetuning-agent/quickstart.md`
-- [ ] T090 [US6] Run server restore, schema ingest/status, and smoke-chat commands using `/home/rag/backup.sql` and record redacted results in `specs/002-real-db-finetuning-agent/quickstart.md`
+- [X] T088 [US6] Commit local changes and push `feature/real-db-finetuning-agent` to GitHub repository `mohamedhussein687/AI-RAG`
+- [X] T089 [US6] Pull pushed branch under `/home/rag/AI-RAG` on `ssh techlab-ai` without copying uncommitted files and record the pulled SHA in `specs/002-real-db-finetuning-agent/quickstart.md`
+- [X] T090 [US6] Run server restore, schema ingest/status, and smoke-chat commands using `/home/rag/backup.sql` and record redacted results in `specs/002-real-db-finetuning-agent/quickstart.md`
 
 **Checkpoint**: User Story 6 is functional and testable independently.
 
