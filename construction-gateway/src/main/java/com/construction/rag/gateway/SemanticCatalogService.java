@@ -23,7 +23,8 @@ import org.springframework.stereotype.Component;
 
 @Component
 class SemanticCatalogService {
-  private static final int MAX_DETAILED_TABLES_IN_PROMPT = 80;
+  private static final int MAX_TABLES_INDEX_IN_PROMPT = 80;
+  private static final int MAX_DETAILED_TABLES_IN_PROMPT = 10;
   private static final int MAX_COLUMNS_IN_PROMPT = 12;
   private static final int CATALOG_VERSION = 2;
   private static final Set<String> SENSITIVE_TOKENS = Set.of(
@@ -62,7 +63,7 @@ class SemanticCatalogService {
     List<CatalogTable> candidates = catalog.tables().stream()
       .filter(CatalogTable::enabled)
       .sorted(Comparator.comparingInt((CatalogTable table) -> candidateScore(question, table)).reversed().thenComparing(CatalogTable::logicalName))
-      .limit(MAX_DETAILED_TABLES_IN_PROMPT)
+      .limit(MAX_TABLES_INDEX_IN_PROMPT)
       .toList();
     List<Map<String, Object>> tableIndex = new ArrayList<>();
     List<Map<String, Object>> tables = new ArrayList<>();
