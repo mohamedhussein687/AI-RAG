@@ -595,7 +595,7 @@ def test_qwen_classifies_required_natural_messages_without_early_unsupported(cli
         assert data["type"] != "unsupported"
 
 
-def test_database_entity_request_is_not_rewritten_when_qwen_misroutes(client, auth_headers, monkeypatch):
+def test_database_entity_request_is_recovered_when_qwen_misroutes_conversational(client, auth_headers, monkeypatch):
     async def misrouted_conversational(self, messages):
         return {
             "type": "final_answer",
@@ -609,8 +609,9 @@ def test_database_entity_request_is_not_rewritten_when_qwen_misroutes(client, au
     response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("اعرض جميع اسماء العملاء", semantic_catalog=client_catalog()))
     assert response.status_code == 200
     data = response.json()
-    assert data["route"] == "conversational"
-    assert data["type"] == "final_answer"
+    assert data["route"] == "database_query"
+    assert data["requires_database"] is True
+    assert data["type"] == "tool_calls"
 
 
 def test_user_name_request_uses_qwen_plan_not_backend_aliases(client, auth_headers, monkeypatch):

@@ -109,7 +109,7 @@ class DecisionService:
         if qwen_decision is not None:
             if isinstance(qwen_decision, dict) and qwen_decision.get(ROUTE_ONLY) in {"rag_search", "hybrid"}:
                 return await self._rag_decision(request, arabic, route=str(qwen_decision[ROUTE_ONLY]))
-            if self._is_generic_unsupported(qwen_decision) and self._looks_like_database_request(understanding_message):
+            if self._is_bad_database_route(qwen_decision) and self._looks_like_database_request(understanding_message):
                 fallback = self._database_request_fallback(request, understanding_message, arabic, reason="qwen_unsupported")
                 if fallback is not None:
                     return fallback
@@ -501,6 +501,20 @@ class DecisionService:
     @staticmethod
     def _is_generic_unsupported(decision: object) -> bool:
         return isinstance(decision, UnsupportedDecision) or (isinstance(decision, dict) and decision.get("type") == "unsupported")
+
+    @staticmethod
+    def _is_conversational_decision(decision: object) -> bool:
+        return (
+            isinstance(decision, FinalAnswerDecision)
+            and decision.route == "conversational"
+        ) or (
+            isinstance(decision, dict)
+            and decision.get("type") == "final_answer"
+            and decision.get("route") == "conversational"
+        )
+
+    def _is_bad_database_route(self, decision: object) -> bool:
+        return self._is_generic_unsupported(decision) or self._is_conversational_decision(decision)
 
     @staticmethod
     def _has_schema_metadata(catalog: dict) -> bool:
