@@ -34,6 +34,8 @@ class FinalAnswerService:
             answer = answer_with_citations(prefix, request.local_rag_results)
         elif has_db:
             no_rows_answer = self._empty_delayed_report_answer(request, arabic)
+            if not no_rows_answer:
+                no_rows_answer = self._empty_project_details_answer(request, arabic)
             if no_rows_answer:
                 answer = no_rows_answer
             else:
@@ -101,4 +103,12 @@ class FinalAnswerService:
             payload = result.result
             if isinstance(payload, dict) and payload.get("intent") == "delayed_projects_report" and payload.get("rows") == []:
                 return "لا توجد مشاريع متأخرة في التسليم حسب البيانات الحالية." if arabic else "There are no delayed projects based on the current data."
+        return None
+
+    def _empty_project_details_answer(self, request: AgentFinalRequest, arabic: bool) -> str | None:
+        for result in request.tool_results:
+            payload = result.result
+            if isinstance(payload, dict) and payload.get("intent") == "project_details" and payload.get("rows") == []:
+                lookup = payload.get("lookup_value") or "المطلوب"
+                return f"لم أجد مشروعًا باسم أو كود {lookup} في البيانات الحالية." if arabic else f"No project named or coded {lookup} was found in the current data."
         return None

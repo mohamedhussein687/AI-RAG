@@ -46,6 +46,27 @@ class RagClientRegistry implements ApplicationRunner {
     ).stream().findFirst();
   }
 
+  Optional<RagClient> findByClientName(String clientName) {
+    return jdbc.query("""
+        select id, client_name, db_type, db_host, db_port, db_name, db_username, db_password_encrypted, status
+        from rag_clients
+        where client_name = ?
+        """,
+      (rs, rowNum) -> new RagClient(
+        rs.getLong("id"),
+        rs.getString("client_name"),
+        rs.getString("db_type"),
+        rs.getString("db_host"),
+        rs.getInt("db_port"),
+        rs.getString("db_name"),
+        rs.getString("db_username"),
+        rs.getString("db_password_encrypted"),
+        rs.getString("status")
+      ),
+      clientName
+    ).stream().findFirst();
+  }
+
   private void ensureTable() {
     jdbc.execute("""
       create table if not exists rag_clients (

@@ -24,6 +24,7 @@ PROJECT_TERMS = ("مشروع", "مشاريع", "المشاريع", "project", "p
 COUNT_TERMS = ("كم", "عدد", "count", "how many", "total")
 DELAY_REPORT_TERMS = ("متاخر", "متاخرين", "متاخره", "تأخير", "تاخير", "delayed", "late")
 DELIVERY_TERMS = ("تسليم", "delivery", "deadline", "end date")
+PROJECT_DETAIL_TERMS = ("معلومات", "تفاصيل", "details", "detail", "info", "information")
 log = logging.getLogger(__name__)
 
 
@@ -192,6 +193,9 @@ class DecisionService:
         return validate_decision(UnsupportedDecision(type="unsupported", answer=answer).model_dump())
 
     def _deterministic_database_guard(self, request: AgentDecideRequest):
+        details = self._project_details_guard(request)
+        if details:
+            return details
         delayed = self._delayed_projects_report_guard(request)
         if delayed:
             return delayed
@@ -210,6 +214,46 @@ class DecisionService:
                     "id": "db_1",
                     "tool": "database_query",
                     "plan": {"operation": "count", "table": table, "filters": [], "limit": min(request.rules.max_rows, 20)},
+                }
+            ],
+            "local_rag_results": [],
+            "final_answer_instruction": self._instruction(prefer_arabic(request.message, request.locale)),
+        }
+
+    def _project_details_guard(self, request: AgentDecideRequest):
+        text = self._normalize(request.message)
+        if not (any(term in text for term in PROJECT_TERMS) and any(term in text for term in PROJECT_DETAIL_TERMS)):
+            return None
+        details = self._domain_report(request.semantic_catalog, "projects", "project_details")
+        if not details or not details.get("enabled"):
+            missing = ", ".join(details.get("missing_fields", [])) if isinstance(details, dict) else "project_details"
+            log.info("agent_decision route=unsupported intent=project_details selected_table=projects operation=details reason=missing_details_mapping missing=%s", missing)
+            return {"type": "unsupported", "answer": f"لا أستطيع جلب تفاصيل المشروع لأن إعدادات خريطة البيانات ناقصة: {missing}."}
+        lookup_value = self._project_lookup_value(request.message)
+        if not lookup_value:
+            return None
+        table = details.get("table")
+        lookup_fields = [field for field in details.get("lookup_fields", []) if isinstance(field, str)]
+        display_fields = [field for field in details.get("display_fields", []) if isinstance(field, str)]
+        if not table or not lookup_fields:
+            return {"type": "unsupported", "answer": "لا أستطيع جلب تفاصيل المشروع لأن حقول البحث غير مكتملة في خريطة البيانات."}
+        return {
+            "type": "tool_calls",
+            "intent": "project_details",
+            "reason": "deterministic_domain_entity_guard",
+            "tool_calls": [
+                {
+                    "id": "db_1",
+                    "tool": "database_query",
+                    "plan": {
+                        "intent": "project_details",
+                        "operation": "details",
+                        "table": table,
+                        "lookup_value": lookup_value,
+                        "lookup_fields": lookup_fields,
+                        "columns": display_fields,
+                        "limit": 1,
+                    },
                 }
             ],
             "local_rag_results": [],
@@ -294,6 +338,18 @@ class DecisionService:
         if "اربع" in text or "اربعه" in text:
             return 4
         return min(max(default, 1), 20)
+
+    def _project_lookup_value(self, message: str) -> str | None:
+        cleaned = re.sub(r"[؟?؛،,]", " ", message).strip()
+        patterns = [
+            r"(?:المشروع|مشروع|project)\s+([A-Za-z0-9_-]{2,80})",
+            r"([A-Za-z]+[0-9][A-Za-z0-9_-]{1,80})",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, cleaned, re.IGNORECASE)
+            if match:
+                return match.group(1)
+        return None
 
     def _normalize(self, value: str) -> str:
         text = value.lower()

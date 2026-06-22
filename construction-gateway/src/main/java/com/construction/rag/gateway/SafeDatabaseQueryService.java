@@ -45,6 +45,10 @@ class SafeDatabaseQueryService {
     if (catalogTable == null) throw new IllegalArgumentException("table is not allowlisted");
     if (!catalogTable.allowedOperations().contains(operation)) throw new IllegalArgumentException("operation is not allowlisted");
 
+    if ("details".equals(operation)) {
+      return executeDetails(client, catalogTable, plan);
+    }
+
     List<?> filters = plan.get("filters") instanceof List<?> list ? list : List.of();
     List<Object> params = new ArrayList<>();
     String where = buildWhere(filters, catalogTable, params);
@@ -93,6 +97,7 @@ class SafeDatabaseQueryService {
         yield "select " + String.join(", ", columns.stream().map(c -> c.physicalName() + " as " + c.logicalName()).toList())
           + " from " + physicalTable + where + order + " limit " + limit;
       }
+      case "details" -> throw new IllegalArgumentException("details operation requires lookup fields");
       default -> throw new IllegalArgumentException("unsupported operation");
     };
   }
@@ -112,7 +117,7 @@ class SafeDatabaseQueryService {
         while (rs.next()) rows.add(Map.of("value", String.valueOf(rs.getObject("value")), "count", rs.getLong("count")));
         yield Map.of("operation", operation, "table", table.logicalName(), "group_by", String.valueOf(plan.get("group_by")), "rows", rows);
       }
-      case "list", "select" -> {
+      case "list", "select", "details" -> {
         List<Map<String, Object>> rows = new ArrayList<>();
         while (rs.next()) {
           Map<String, Object> row = new LinkedHashMap<>();
@@ -132,6 +137,59 @@ class SafeDatabaseQueryService {
     };
   }
 
+  private Map<String, Object> executeDetails(RagClient client, CatalogTable table, Map<?, ?> plan) throws Exception {
+    String lookupValue = string(plan.get("lookup_value")).trim();
+    if (lookupValue.isBlank()) throw new IllegalArgumentException("lookup_value is required for details");
+    List<CatalogColumn> lookupColumns = lookupColumns(table, plan.get("lookup_fields"));
+    List<CatalogColumn> columns = selectedColumns(table, plan.get("columns"));
+    int limit = Math.min(limit(plan.get("limit")), 1);
+    String select = String.join(", ", columns.stream().map(c -> c.physicalName() + " as " + c.logicalName()).toList());
+    String exactWhere = String.join(" or ", lookupColumns.stream().map(c -> c.physicalName() + " = ?").toList());
+    String fuzzyWhere = String.join(" or ", lookupColumns.stream().map(c -> c.physicalName() + " like ?").toList());
+    String order = table.column("updated_at") == null ? "" : " order by " + table.column("updated_at").physicalName() + " desc";
+    DataSource dataSource = dataSources.dataSource(client);
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setReadOnly(true);
+      validateActualSchema(connection, table, plan, List.of());
+      for (CatalogColumn column : lookupColumns) validateColumnExists(connection, table, column);
+      String exactSql = "select " + select + " from " + table.physicalName() + " where " + exactWhere + " limit " + limit;
+      log.info("safe_database_query operation=details selected_table={} physical_table={} filters=lookup_exact limit={} sql_template={} reason=validated_catalog_plan",
+        table.logicalName(), table.physicalName(), limit, exactSql);
+      List<Map<String, Object>> rows = queryRows(connection, exactSql, lookupColumns.stream().map(c -> (Object) lookupValue).toList(), columns);
+      if (rows.isEmpty()) {
+        String fuzzySql = "select " + select + " from " + table.physicalName() + " where " + fuzzyWhere + order + " limit " + limit;
+        log.info("safe_database_query operation=details selected_table={} physical_table={} filters=lookup_fuzzy limit={} sql_template={} reason=validated_catalog_plan",
+          table.logicalName(), table.physicalName(), limit, fuzzySql);
+        rows = queryRows(connection, fuzzySql, lookupColumns.stream().map(c -> (Object) ("%" + lookupValue + "%")).toList(), columns);
+      }
+      Map<String, Object> result = new LinkedHashMap<>();
+      result.put("operation", "details");
+      Object intent = plan.get("intent");
+      result.put("intent", intent == null ? "project_details" : String.valueOf(intent));
+      result.put("table", table.logicalName());
+      result.put("lookup_value", lookupValue);
+      result.put("rows", rows);
+      return result;
+    }
+  }
+
+  private List<Map<String, Object>> queryRows(Connection connection, String sql, List<Object> params, List<CatalogColumn> columns) throws Exception {
+    try (PreparedStatement statement = connection.prepareStatement(sql)) {
+      statement.setQueryTimeout(10);
+      for (int i = 0; i < params.size(); i++) statement.setObject(i + 1, params.get(i));
+      try (ResultSet rs = statement.executeQuery()) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        while (rs.next()) {
+          Map<String, Object> row = new LinkedHashMap<>();
+          for (CatalogColumn column : columns) row.put(column.logicalName(), rs.getObject(column.logicalName()));
+          addDelayDays(row);
+          rows.add(row);
+        }
+        return rows;
+      }
+    }
+  }
+
   private void validateActualSchema(Connection connection, CatalogTable table, Map<?, ?> plan, List<?> filters) throws Exception {
     try (ResultSet tables = connection.getMetaData().getTables(connection.getCatalog(), null, table.physicalName(), new String[]{"TABLE"})) {
       if (!tables.next()) throw new IllegalArgumentException("client database table missing: " + table.physicalName());
@@ -143,6 +201,7 @@ class SafeDatabaseQueryService {
     if (plan.get("column") != null) validateColumnExists(connection, table, requiredColumn(table, plan.get("column"), "column"));
     if (plan.get("group_by") != null) validateColumnExists(connection, table, requiredColumn(table, plan.get("group_by"), "group_by"));
     if (plan.get("order_by") instanceof Map<?, ?> orderBy) validateColumnExists(connection, table, requiredColumn(table, orderBy.get("column"), "order_by.column"));
+    if (plan.get("lookup_fields") instanceof List<?> lookupFields) for (Object lookupField : lookupFields) validateColumnExists(connection, table, requiredColumn(table, lookupField, "lookup_fields"));
     for (CatalogColumn column : selectedColumns(table, plan.get("columns"))) validateColumnExists(connection, table, column);
   }
 
@@ -239,6 +298,18 @@ class SafeDatabaseQueryService {
     List<CatalogColumn> out = new ArrayList<>();
     for (Object item : requested) out.add(requiredColumn(table, item, "columns"));
     if (out.size() > 12) throw new IllegalArgumentException("too many selected columns");
+    return List.copyOf(out);
+  }
+
+  private List<CatalogColumn> lookupColumns(CatalogTable table, Object value) {
+    if (!(value instanceof List<?> requested) || requested.isEmpty()) throw new IllegalArgumentException("lookup_fields are required");
+    List<CatalogColumn> out = new ArrayList<>();
+    for (Object item : requested) {
+      CatalogColumn column = requiredColumn(table, item, "lookup_fields");
+      if (!column.fieldType().equals("string") || !column.allowedOperations().contains("filter")) throw new IllegalArgumentException("lookup field is not allowlisted");
+      out.add(column);
+    }
+    if (out.size() > 5) throw new IllegalArgumentException("too many lookup fields");
     return List.copyOf(out);
   }
 

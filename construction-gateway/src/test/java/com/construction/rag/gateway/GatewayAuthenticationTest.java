@@ -117,7 +117,7 @@ class GatewayAuthenticationTest {
       ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("{\"type\":\"clarification\",\"question\":\"هل يمكنك التوضيح؟\"}"));
       ai.start(InetAddress.getByName("127.0.0.1"), 0);
       GatewayProperties props = props(ai.url("/").toString(), "internal-ai-token");
-      RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props), null, null);
+      RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props), null, null, null);
       ServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/api/agent/decide").build());
       exchange.getAttributes().put(BearerTokenFilter.IDENTITY_ATTR, identity());
 
@@ -137,7 +137,7 @@ class GatewayAuthenticationTest {
 
   @Test
   void forgedRequestBodyContextIsRejectedByController() {
-    RagGatewayController controller = new RagGatewayController(null, null, null);
+    RagGatewayController controller = new RagGatewayController(null, null, null, null);
     ServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/api/rag/search").build());
     exchange.getAttributes().put(BearerTokenFilter.IDENTITY_ATTR, identity());
 
@@ -168,7 +168,7 @@ class GatewayAuthenticationTest {
       Mockito.when(catalogs.catalog(Mockito.any())).thenReturn(catalog);
       Mockito.when(catalogs.allowedSchema(catalog)).thenReturn(Map.of("tables", List.of(Map.of("name", "projects", "columns", List.of("status"), "allowed_operations", List.of("count")))));
       Mockito.when(catalogs.promptSummary(catalog)).thenReturn(Map.of("tables_index", List.of(Map.of("name", "projects")), "tables", List.of()));
-      RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props), db, catalogs);
+      RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props), db, catalogs, null);
       ServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/api/chat").header("X-API-Key", "redacted").build());
       exchange.getAttributes().put(ApiKeyClientFilter.RAG_CLIENT_ATTR, new RagClient(7, "orbit", "mysql", "db", 3306, "orbit", "user", "encrypted", "active"));
 
@@ -206,7 +206,7 @@ class GatewayAuthenticationTest {
       Mockito.when(catalogs.catalog(Mockito.any())).thenReturn(catalog);
       Mockito.when(catalogs.allowedSchema(catalog)).thenReturn(Map.of("tables", List.of()));
       Mockito.when(catalogs.promptSummary(catalog)).thenReturn(Map.of("tables_index", List.of(Map.of("name", "projects")), "tables", List.of()));
-      RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props(ai.url("/").toString(), "internal-ai-token")), db, catalogs);
+      RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props(ai.url("/").toString(), "internal-ai-token")), db, catalogs, null);
     ServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/api/chat").header("X-API-Key", "redacted").build());
     exchange.getAttributes().put(ApiKeyClientFilter.RAG_CLIENT_ATTR, new RagClient(7, "orbit", "mysql", "db", 3306, "orbit", "user", "encrypted", "active"));
 

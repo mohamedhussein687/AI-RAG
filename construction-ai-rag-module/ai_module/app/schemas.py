@@ -2,7 +2,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 DisplayType = Literal["text", "metric", "table", "answer_with_sources", "mixed", "clarification"]
-DbOperation = Literal["count", "list", "select", "sum", "avg", "min", "max", "group_count"]
+DbOperation = Literal["count", "list", "select", "details", "sum", "avg", "min", "max", "group_count"]
 
 
 class StrictModel(BaseModel):
@@ -93,6 +93,8 @@ class DatabaseQueryPlan(StrictModel):
     table: str
     column: str | None = None
     columns: list[str] = Field(default_factory=list)
+    lookup_value: str | None = None
+    lookup_fields: list[str] = Field(default_factory=list)
     filters: list[DatabaseFilter] = Field(default_factory=list)
     order_by: OrderBy | None = None
     group_by: str | None = None

@@ -17,16 +17,20 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import javax.sql.DataSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 @Component
 class SemanticCatalogService {
+  private static final Logger log = LoggerFactory.getLogger(SemanticCatalogService.class);
   private static final int MAX_TABLES_INDEX_IN_PROMPT = 80;
   private static final int MAX_DETAILED_TABLES_IN_PROMPT = 10;
   private static final int MAX_COLUMNS_IN_PROMPT = 12;
-  private static final int CATALOG_VERSION = 4;
+  private static final int CATALOG_VERSION = 5;
   private static final Set<String> CMS_TABLE_NAMES = Set.of(
     "about_us", "pages", "settings", "banners", "sliders", "menus", "menu_items", "cms_pages", "cms_blocks"
   );
@@ -39,6 +43,7 @@ class SemanticCatalogService {
   private final ClientDataSourceManager dataSources;
   private final ObjectMapper mapper;
   private final Map<Long, SemanticCatalog> cache = new HashMap<>();
+  private final Map<Long, Map<String, Object>> schemaCache = new ConcurrentHashMap<>();
 
   SemanticCatalogService(JdbcTemplate jdbc, ClientDataSourceManager dataSources, ObjectMapper mapper) {
     this.jdbc = jdbc;
@@ -59,7 +64,33 @@ class SemanticCatalogService {
     SemanticCatalog generated = discover(client, schemaHash);
     persist(client, generated);
     cache.put(client.id(), generated);
+    log.info("semantic_catalog_generated client={} catalog_version={} schema_hash={} tables={}", client.clientName(), generated.version(), generated.schemaHash(), generated.tables().size());
     return generated;
+  }
+
+  synchronized Map<String, Object> adminSchema(RagClient client) {
+    String schemaHash = currentSchemaHash(client);
+    Map<String, Object> cached = schemaCache.get(client.id());
+    if (cached != null && schemaHash.equals(cached.get("schema_hash"))) return cached;
+    Map<String, Object> discovered = discoverAdminSchema(client, schemaHash);
+    schemaCache.put(client.id(), discovered);
+    log.info("schema_discovery client={} schema_hash={} tables={}", client.clientName(), schemaHash, ((List<?>) discovered.get("tables")).size());
+    return discovered;
+  }
+
+  synchronized Map<String, Object> refreshAdminSchema(RagClient client) {
+    cache.remove(client.id());
+    schemaCache.remove(client.id());
+    jdbc.update("update rag_client_catalogs set enabled = false, updated_at = now() where client_name = ?", client.clientName());
+    SemanticCatalog refreshedCatalog = catalog(client);
+    Map<String, Object> schema = adminSchema(client);
+    return Map.of(
+      "client_name", client.clientName(),
+      "catalog_version", refreshedCatalog.version(),
+      "schema_hash", refreshedCatalog.schemaHash(),
+      "tables", ((List<?>) schema.get("tables")).size(),
+      "refreshed", true
+    );
   }
 
   Map<String, Object> promptSummary(SemanticCatalog catalog) {
@@ -285,9 +316,38 @@ class SemanticCatalogService {
       ));
       Map<String, Object> delayedReport = delayedProjectsReport(projects);
       if (!delayedReport.isEmpty()) projectEntity.put("delayed_projects_report", delayedReport);
+      Map<String, Object> projectDetails = projectDetails(projects);
+      if (!projectDetails.isEmpty()) projectEntity.put("project_details", projectDetails);
       entities.add(projectEntity);
     }
     return List.copyOf(entities);
+  }
+
+  private static Map<String, Object> projectDetails(CatalogTable projects) {
+    CatalogColumn title = projects.column("title");
+    List<String> lookup = new ArrayList<>();
+    for (String candidate : List.of("title", "project_code", "project_serial", "code", "name")) {
+      CatalogColumn column = projects.column(candidate);
+      if (column != null && "string".equals(column.fieldType()) && column.allowedOperations().contains("filter")) lookup.add(column.logicalName());
+    }
+    if (title == null || lookup.isEmpty()) return Map.of(
+      "enabled", false,
+      "missing_fields", missing("title", title, "lookup_fields", lookup.isEmpty() ? null : lookup)
+    );
+    List<String> display = new ArrayList<>();
+    for (String candidate : List.of("title", "project_code", "project_serial", "status", "planned_delivery_date", "actual_delivery_date", "is_finished", "created_at", "updated_at")) {
+      CatalogColumn column = projects.column(candidate);
+      if (column != null) display.add(column.logicalName());
+    }
+    return Map.of(
+      "enabled", true,
+      "intent", "project_details",
+      "operation", "details",
+      "table", projects.logicalName(),
+      "lookup_fields", List.copyOf(lookup),
+      "display_fields", List.copyOf(display),
+      "default_limit", 1
+    );
   }
 
   private static Map<String, Object> delayedProjectsReport(CatalogTable projects) {
@@ -360,6 +420,7 @@ class SemanticCatalogService {
 
   private static List<String> tableOperations(List<CatalogColumn> columns) {
     List<String> ops = new ArrayList<>(List.of("count", "list", "select"));
+    if (columns.stream().anyMatch(c -> c.enabled() && "string".equals(c.fieldType()) && c.allowedOperations().contains("filter"))) ops.add("details");
     if (columns.stream().anyMatch(c -> c.enabled() && c.allowedOperations().contains("group"))) ops.add("group_count");
     if (columns.stream().anyMatch(c -> c.enabled() && c.allowedOperations().contains("sum"))) ops.add("sum");
     if (columns.stream().anyMatch(c -> c.enabled() && c.allowedOperations().contains("avg"))) ops.add("avg");
@@ -399,6 +460,136 @@ class SemanticCatalogService {
     } catch (Exception ignored) {
     }
     return -1;
+  }
+
+  private Map<String, Object> discoverAdminSchema(RagClient client, String schemaHash) {
+    try {
+      DataSource ds = dataSources.dataSource(client);
+      try (Connection c = ds.getConnection()) {
+        Map<String, Map<String, Object>> tables = new LinkedHashMap<>();
+        try (PreparedStatement ps = c.prepareStatement("""
+             select table_name, table_type, coalesce(table_rows, 0) as table_rows
+             from information_schema.tables
+             where table_schema = database()
+             order by table_name
+             """);
+             ResultSet rs = ps.executeQuery()) {
+          while (rs.next()) {
+            String table = rs.getString("table_name");
+            if (!safeIdentifier(table) || systemTable(table)) continue;
+            tables.put(table, new LinkedHashMap<>(Map.of(
+              "name", table,
+              "category", tableCategory(table),
+              "enabledForPlanning", !cmsContentTable(table),
+              "tableType", rs.getString("table_type"),
+              "approxRows", Math.max(rs.getLong("table_rows"), 0L),
+              "columns", new ArrayList<Map<String, Object>>(),
+              "primaryKey", new ArrayList<String>(),
+              "foreignKeys", new ArrayList<Map<String, Object>>(),
+              "indexes", new ArrayList<Map<String, Object>>()
+            )));
+          }
+        }
+        try (PreparedStatement ps = c.prepareStatement("""
+             select table_name, column_name, data_type, column_type, is_nullable, column_key, ordinal_position
+             from information_schema.columns
+             where table_schema = database()
+             order by table_name, ordinal_position
+             """);
+             ResultSet rs = ps.executeQuery()) {
+          while (rs.next()) {
+            Map<String, Object> table = tables.get(rs.getString("table_name"));
+            if (table == null) continue;
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> columns = (List<Map<String, Object>>) table.get("columns");
+            columns.add(Map.of(
+              "name", rs.getString("column_name"),
+              "type", rs.getString("data_type"),
+              "columnType", rs.getString("column_type"),
+              "nullable", "YES".equalsIgnoreCase(rs.getString("is_nullable")),
+              "primaryKey", "PRI".equalsIgnoreCase(rs.getString("column_key")),
+              "sensitive", sensitive(rs.getString("column_name"))
+            ));
+          }
+        }
+        try (PreparedStatement ps = c.prepareStatement("""
+             select table_name, column_name
+             from information_schema.key_column_usage
+             where table_schema = database() and constraint_name = 'PRIMARY'
+             order by table_name, ordinal_position
+             """);
+             ResultSet rs = ps.executeQuery()) {
+          while (rs.next()) {
+            Map<String, Object> table = tables.get(rs.getString("table_name"));
+            if (table == null) continue;
+            @SuppressWarnings("unchecked")
+            List<String> primaryKey = (List<String>) table.get("primaryKey");
+            primaryKey.add(rs.getString("column_name"));
+          }
+        }
+        try (PreparedStatement ps = c.prepareStatement("""
+             select table_name, column_name, referenced_table_name, referenced_column_name, constraint_name
+             from information_schema.key_column_usage
+             where table_schema = database() and referenced_table_name is not null
+             order by table_name, constraint_name, ordinal_position
+             """);
+             ResultSet rs = ps.executeQuery()) {
+          while (rs.next()) {
+            Map<String, Object> table = tables.get(rs.getString("table_name"));
+            if (table == null) continue;
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> foreignKeys = (List<Map<String, Object>>) table.get("foreignKeys");
+            foreignKeys.add(Map.of(
+              "name", rs.getString("constraint_name"),
+              "column", rs.getString("column_name"),
+              "referencedTable", rs.getString("referenced_table_name"),
+              "referencedColumn", rs.getString("referenced_column_name")
+            ));
+          }
+        }
+        try (PreparedStatement ps = c.prepareStatement("""
+             select table_name, index_name, column_name, non_unique, seq_in_index
+             from information_schema.statistics
+             where table_schema = database()
+             order by table_name, index_name, seq_in_index
+             """);
+             ResultSet rs = ps.executeQuery()) {
+          while (rs.next()) {
+            Map<String, Object> table = tables.get(rs.getString("table_name"));
+            if (table == null) continue;
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> indexes = (List<Map<String, Object>>) table.get("indexes");
+            indexes.add(Map.of(
+              "name", rs.getString("index_name"),
+              "column", rs.getString("column_name"),
+              "unique", !rs.getBoolean("non_unique"),
+              "position", rs.getInt("seq_in_index")
+            ));
+          }
+        }
+        return Map.of(
+          "client_name", client.clientName(),
+          "schema_hash", schemaHash,
+          "generated_at", Instant.now().toString(),
+          "tables", new ArrayList<>(tables.values())
+        );
+      }
+    } catch (Exception ex) {
+      throw new IllegalStateException("failed to discover client admin schema", ex);
+    }
+  }
+
+  private static String tableCategory(String table) {
+    if (cmsContentTable(table)) return "cms_content";
+    if (systemTable(table)) return "system";
+    return "business";
+  }
+
+  private static boolean systemTable(String table) {
+    String t = table.toLowerCase(Locale.ROOT);
+    return t.equals("migrations") || t.equals("failed_jobs") || t.equals("password_reset_tokens")
+      || t.equals("personal_access_tokens") || t.equals("sessions") || t.equals("cache") || t.equals("jobs")
+      || t.startsWith("oauth_");
   }
 
   private static String entityName(String table) {

@@ -28,11 +28,13 @@ class RagGatewayController {
   private final AiModuleClient ai;
   private final SafeDatabaseQueryService databaseQueries;
   private final SemanticCatalogService catalogs;
+  private final RagClientRegistry clients;
 
-  RagGatewayController(AiModuleClient ai, SafeDatabaseQueryService databaseQueries, SemanticCatalogService catalogs) {
+  RagGatewayController(AiModuleClient ai, SafeDatabaseQueryService databaseQueries, SemanticCatalogService catalogs, RagClientRegistry clients) {
     this.ai = ai;
     this.databaseQueries = databaseQueries;
     this.catalogs = catalogs;
+    this.clients = clients;
   }
 
   @GetMapping("/health/live") Map<String, String> live() { return Map.of("status", "ok"); }
@@ -86,6 +88,18 @@ class RagGatewayController {
       .flatMap(decision -> finishDecision(decision, normalized));
   }
 
+  @GetMapping("/internal/admin/schema")
+  Map<String, Object> adminSchema(@RequestParam(defaultValue = "orbit") String client, ServerWebExchange exchange) {
+    requireAdmin(identity(exchange));
+    return catalogs.adminSchema(clientByName(client));
+  }
+
+  @PostMapping("/internal/admin/schema/refresh")
+  Map<String, Object> refreshAdminSchema(@RequestParam(defaultValue = "orbit") String client, ServerWebExchange exchange) {
+    requireAdmin(identity(exchange));
+    return catalogs.refreshAdminSchema(clientByName(client));
+  }
+
   private Mono<Object> apiKeyChat(RagClient client, Map<String, Object> request) {
     String message = String.valueOf(request.getOrDefault("message", ""));
     SemanticCatalog catalog = catalogs.catalog(client);
@@ -113,10 +127,13 @@ class RagGatewayController {
   ResponseEntity<Map<String, String>> badRequest(IllegalArgumentException ex) { return ResponseEntity.badRequest().body(Map.of("error", ex.getMessage())); }
 
   @ExceptionHandler(ResponseStatusException.class)
-  ResponseEntity<Map<String, String>> downstream(ResponseStatusException ex) {
+  ResponseEntity<Map<String, Object>> downstream(ResponseStatusException ex, ServerWebExchange exchange) {
     HttpStatus status = HttpStatus.resolve(ex.getStatusCode().value());
+    String requestId = exchange.getRequest().getId();
+    String reason = safeDiagnostic(ex.getReason());
+    log.warn("gateway_downstream_error request_id={} status={} diagnostic={}", requestId, ex.getStatusCode().value(), reason);
     return ResponseEntity.status(status == null ? HttpStatus.BAD_GATEWAY : status)
-      .body(Map.of("error", "ai_module_request_failed"));
+      .body(Map.of("error", "ai_module_request_failed", "request_id", requestId, "diagnostic", reason));
   }
 
   private Map<String, Object> agentRequest(Map<String, Object> request, ServerWebExchange exchange) {
@@ -192,6 +209,25 @@ class RagGatewayController {
 
   private void requirePermission(TrustedIdentity identity, String permission) {
     if (!identity.permissions().contains(permission)) throw new IllegalArgumentException("required permission missing: " + permission);
+  }
+
+  private void requireAdmin(TrustedIdentity identity) {
+    if (!identity.roles().contains("rag-admin") && !identity.permissions().contains("docs.admin")) {
+      throw new IllegalArgumentException("admin role required");
+    }
+  }
+
+  private RagClient clientByName(String clientName) {
+    if (clients == null) throw new IllegalStateException("client registry is unavailable");
+    return clients.findByClientName(clientName).filter(RagClient::active).orElseThrow(() -> new IllegalArgumentException("rag client not found"));
+  }
+
+  private String safeDiagnostic(String value) {
+    if (value == null) return "";
+    String safe = value
+      .replaceAll("(?i)(bearer\\s+)[A-Za-z0-9._-]+", "$1[REDACTED]")
+      .replaceAll("(?i)(token|password|secret|api_key|authorization)(\"?\\s*[:=]\\s*\"?)[^\"\\s,}]+", "$1$2[REDACTED]");
+    return safe.length() > 500 ? safe.substring(0, 500) : safe;
   }
 
   private Map<String, Object> mutableCopy(Map<String, Object> request) {

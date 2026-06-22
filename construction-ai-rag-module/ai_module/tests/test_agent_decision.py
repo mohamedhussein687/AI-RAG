@@ -59,6 +59,15 @@ def project_catalog_with_cms_table():
                     "order_field": "updated_at",
                     "default_limit": 4,
                 },
+                "project_details": {
+                    "enabled": True,
+                    "intent": "project_details",
+                    "operation": "details",
+                    "table": "projects",
+                    "lookup_fields": ["title", "project_code", "project_serial"],
+                    "display_fields": ["title", "project_code", "project_serial", "status", "planned_delivery_date", "actual_delivery_date", "updated_at"],
+                    "default_limit": 1,
+                },
             }
         ],
         "tables_index": [
@@ -190,6 +199,32 @@ def test_delayed_projects_report_uses_projects_table_limit_and_latest_order(clie
         assert plan["order_by"] == {"column": "updated_at", "direction": "desc"}
         assert {"column": "planned_delivery_date", "operator": "lt", "value": "today"} in plan["filters"]
         assert {"column": "is_finished", "operator": "not_completed", "value": False} in plan["filters"]
+
+
+def test_project_details_questions_use_projects_lookup_not_about_us(client, auth_headers, monkeypatch):
+    async def should_not_call_qwen(self, messages):
+        raise AssertionError("project_details guard should run before LLM table selection")
+
+    monkeypatch.setattr(LlmClient, "chat_json", should_not_call_qwen)
+    questions = [
+        "اريد معلومات عن المشروع test60",
+        "معلومات عن مشروع test60",
+        "تفاصيل المشروع test60",
+        "project test60 details",
+    ]
+    for question in questions:
+        response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload(question, semantic_catalog=project_catalog_with_cms_table()))
+        assert response.status_code == 200
+        data = response.json()
+        assert data["type"] == "tool_calls"
+        plan = data["tool_calls"][0]["plan"]
+        assert plan["intent"] == "project_details"
+        assert plan["operation"] == "details"
+        assert plan["table"] == "projects"
+        assert plan["table"] != "about_us"
+        assert plan["lookup_value"] == "test60"
+        assert plan["lookup_fields"] == ["title", "project_code", "project_serial"]
+        assert plan["limit"] == 1
 
 
 def test_equivalent_invoice_questions_generate_same_plan(client, auth_headers, monkeypatch):

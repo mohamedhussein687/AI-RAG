@@ -35,6 +35,20 @@ def test_empty_delayed_projects_report_returns_clear_arabic_message(client, auth
     assert response.json()["answer"] == "لا توجد مشاريع متأخرة في التسليم حسب البيانات الحالية."
 
 
+def test_empty_project_details_returns_clear_arabic_message(client, auth_headers):
+    response = client.post("/api/agent/final", headers=auth_headers, json={
+        "conversation_id": "conv",
+        "message": "اريد معلومات عن المشروع test60",
+        "locale": "ar",
+        "conversation_history": [],
+        "tool_results": [{"tool_call_id": "db_1", "tool": "database_query", "result": {"operation": "details", "intent": "project_details", "table": "projects", "lookup_value": "test60", "rows": []}}],
+        "local_rag_results": [],
+        "final_answer_instruction": "Answer in Arabic.",
+    })
+    assert response.status_code == 200
+    assert response.json()["answer"] == "لم أجد مشروعًا باسم أو كود test60 في البيانات الحالية."
+
+
 def test_final_answer_includes_sources_when_rag_is_used(client, auth_headers):
     index_policy(client, auth_headers)
     search = client.post("/api/rag/search", headers=auth_headers, json={"query": "تأخر المشروع", "user_context": {"tenant_id": "3", "project_ids": ["22"], "permissions": ["docs.view", "policies.view"]}, "top_k": 1, "filters": {"project_id": "22"}})

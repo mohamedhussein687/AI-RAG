@@ -125,4 +125,74 @@ class SafeDatabaseQueryServiceTest {
     verify(statement).setObject(eq(1), org.mockito.ArgumentMatchers.isA(LocalDate.class));
     verify(statement).setObject(eq(2), eq(0));
   }
+
+  @Test
+  void projectDetailsUsesExactThenFuzzyLookupOnAllowlistedFields() throws Exception {
+    ClientDataSourceManager manager = mock(ClientDataSourceManager.class);
+    DataSource dataSource = mock(DataSource.class);
+    Connection connection = mock(Connection.class);
+    DatabaseMetaData metaData = mock(DatabaseMetaData.class);
+    ResultSet tables = mock(ResultSet.class);
+    PreparedStatement exact = mock(PreparedStatement.class);
+    PreparedStatement fuzzy = mock(PreparedStatement.class);
+    ResultSet exactResult = mock(ResultSet.class);
+    ResultSet fuzzyResult = mock(ResultSet.class);
+    SemanticCatalogService catalogs = mock(SemanticCatalogService.class);
+    RagClient orbit = new RagClient(7, "orbit", "mysql", "db", 3306, "orbit", "user", "encrypted", "active");
+
+    when(manager.dataSource(orbit)).thenReturn(dataSource);
+    when(dataSource.getConnection()).thenReturn(connection);
+    when(connection.getCatalog()).thenReturn("testorbit");
+    when(connection.getMetaData()).thenReturn(metaData);
+    when(metaData.getTables(eq("testorbit"), any(), eq("projects"), any())).thenReturn(tables);
+    when(tables.next()).thenReturn(true);
+    when(metaData.getColumns(eq("testorbit"), any(), eq("projects"), any())).thenAnswer(invocation -> {
+      ResultSet rs = mock(ResultSet.class);
+      when(rs.next()).thenReturn(true);
+      return rs;
+    });
+    String exactSql = "select title as title, project_code as project_code, project_serial as project_serial, project_status as status, updated_at as updated_at from projects where title = ? or project_code = ? or project_serial = ? limit 1";
+    String fuzzySql = "select title as title, project_code as project_code, project_serial as project_serial, project_status as status, updated_at as updated_at from projects where title like ? or project_code like ? or project_serial like ? order by updated_at desc limit 1";
+    when(connection.prepareStatement(exactSql)).thenReturn(exact);
+    when(connection.prepareStatement(fuzzySql)).thenReturn(fuzzy);
+    when(exact.executeQuery()).thenReturn(exactResult);
+    when(exactResult.next()).thenReturn(false);
+    when(fuzzy.executeQuery()).thenReturn(fuzzyResult);
+    when(fuzzyResult.next()).thenReturn(true, false);
+    when(fuzzyResult.getObject("title")).thenReturn("test60");
+    when(fuzzyResult.getObject("project_code")).thenReturn("T60");
+    when(fuzzyResult.getObject("project_serial")).thenReturn("60");
+    when(fuzzyResult.getObject("status")).thenReturn("waiting");
+    when(fuzzyResult.getObject("updated_at")).thenReturn(null);
+    when(catalogs.catalog(orbit)).thenReturn(new SemanticCatalog("orbit", 5, "now", "hash", true, List.of(new CatalogTable(
+      "projects", "projects", "project", List.of("مشروع", "مشاريع"), List.of("projects", "project"),
+      List.of(
+        new CatalogColumn("title", "title", "string", true, List.of("filter", "sort", "group"), List.of(), false, true),
+        new CatalogColumn("project_code", "project_code", "string", true, List.of("filter", "sort", "group"), List.of(), false, true),
+        new CatalogColumn("project_serial", "project_serial", "string", true, List.of("filter", "sort", "group"), List.of(), false, true),
+        new CatalogColumn("status", "project_status", "string", true, List.of("filter", "sort", "group"), List.of(), false, true),
+        new CatalogColumn("updated_at", "updated_at", "date", true, List.of("filter", "sort", "group"), List.of(), false, true)
+      ),
+      List.of("count", "list", "select", "details", "group_count"), true, 0
+    ))));
+
+    SafeDatabaseQueryService service = new SafeDatabaseQueryService(manager, catalogs);
+    Map<String, Object> result = service.execute(orbit, Map.of(
+      "plan", Map.of(
+        "intent", "project_details",
+        "operation", "details",
+        "table", "projects",
+        "lookup_value", "test60",
+        "lookup_fields", List.of("title", "project_code", "project_serial"),
+        "columns", List.of("title", "project_code", "project_serial", "status", "updated_at"),
+        "limit", 1
+      )
+    )).block();
+
+    assertThat(result).containsEntry("intent", "project_details");
+    assertThat(result).containsEntry("table", "projects");
+    assertThat(((List<?>) result.get("rows"))).hasSize(1);
+    verify(exact).setObject(eq(1), eq("test60"));
+    verify(fuzzy).setObject(eq(1), eq("%test60%"));
+  }
 }
