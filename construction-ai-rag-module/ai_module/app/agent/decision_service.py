@@ -9,11 +9,13 @@ from app.schemas import (
 )
 from .json_guard import validate_decision
 from .normalization import ArabicNormalizer
-from .prompt_builder import prefer_arabic
+from .prompt_builder import build_database_planning_prompt, prefer_arabic
 from .routing import MessageRouter
 from app.rag.retrieval_service import RetrievalService
 from app.schemas import RagSearchRequest, RagFilters
 from app.schema.schema_service import SchemaService
+from app.schema.schema_models import is_sensitive_field
+from app.common.logging import route_log_fields
 from app.schemas import SchemaSearchRequest
 from app.clients.llm_client import LlmClient
 import json
@@ -21,7 +23,33 @@ import logging
 import re
 from pydantic import ValidationError
 
-SENSITIVE = ("password", "باسورد", "كلمة السر", "secret", "credential", "token")
+SENSITIVE = (
+    "password",
+    "passwd",
+    "pass",
+    "باسورد",
+    "كلمة السر",
+    "كلمه السر",
+    "secret",
+    "credential",
+    "credentials",
+    "token",
+    "api key",
+    "api_key",
+    "access token",
+    "refresh token",
+    "private key",
+    "private_key",
+    "otp",
+    "verification code",
+    "reset token",
+    "remember token",
+    "مفتاح خاص",
+    "رمز التحقق",
+    "كود التحقق",
+    "رمز سري",
+    "توكن",
+)
 DOC_TERMS = ("إزاي", "how to", "policy", "سياسة", "procedure", "إجراء", "manual", "دليل", "contract", "عقد", "مستخلص")
 DELAY_TERMS = ("متأخر", "delayed", "delay")
 ROUTE_ONLY = "__route_only__"
@@ -47,8 +75,17 @@ class DecisionService:
         text = request.message.lower()
         arabic = prefer_arabic(request.message, request.locale)
         understanding_message = self._message_for_understanding(request)
-        if any(term in text for term in SENSITIVE):
-            log.info("agent_decision route=forbidden intent=sensitive_data selected_table=none operation=none normalized_message=%s reason=sensitive_term", self._normalize(request.message)[:300])
+        if self._contains_sensitive_request(request.message):
+            log.info(
+                "agent_decision %s reason=sensitive_term",
+                route_log_fields(
+                    request_id=request.conversation_id,
+                    normalized_message=self._normalize(request.message),
+                    route="forbidden",
+                    operation="none",
+                    selected_table="none",
+                ),
+            )
             return validate_decision(ForbiddenDecision(type="forbidden").model_dump())
         resolved_value_followup = self._resolve_value_followup(request)
         if resolved_value_followup:
@@ -101,10 +138,26 @@ class DecisionService:
 
     def _safe_decision_fallback(self, request: AgentDecideRequest, exc: Exception):
         normalized = self._normalize(request.message)
+        if self._contains_sensitive_request(request.message):
+            return validate_decision(ForbiddenDecision(type="forbidden").model_dump())
+        conversation = self.router.route(request.message, self._has_database_catalog(request))
+        if conversation.route == "conversational":
+            return validate_decision(
+                FinalAnswerDecision(
+                    type="final_answer",
+                    answer=conversation.answer,
+                    display=Display(type="text", data={"conversation_type": conversation.intent, "fallback": True}),
+                    sources=[],
+                ).model_dump()
+            )
         log.exception(
-            "agent_decision route=unsupported intent=decision_pipeline_error selected_table=none operation=none normalized_message=%s error_class=%s",
-            normalized[:300],
-            exc.__class__.__name__,
+            "agent_decision %s intent=decision_pipeline_error",
+            route_log_fields(
+                request_id=request.conversation_id,
+                normalized_message=normalized,
+                route="unsupported",
+                error_class=exc.__class__.__name__,
+            ),
         )
         answer = "لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."
         return validate_decision(UnsupportedDecision(type="unsupported", answer=answer).model_dump())
@@ -148,21 +201,14 @@ class DecisionService:
             {
                 "role": "system",
                 "content": (
-                    "You are Qwen, the primary intent understanding engine for an Arabic-first RAG and database assistant. "
-                    "Classify every normal user message before any unsupported fallback. Return exactly one strict JSON object and nothing else. "
+                    build_database_planning_prompt()
+                    + " "
                     "Use resolved_question_for_intent for intent classification and database planning when it differs from question; it may include prior conversation context for vague follow-ups. "
                     "Use question for final wording and user-facing tone. "
-                    "Valid routes are conversational, rag_search, database_query, hybrid, direct_answer, clarification_needed, unsupported. "
-                    "Use unsupported only for unsafe, impossible, or clearly out-of-scope requests after considering whether a direct answer, clarification, RAG search, or database query is possible. "
                     "Do not mark a question unsupported merely because wording is unfamiliar or because retrieved documents may be empty. "
-                    "For greetings, small-talk, wellbeing questions, thanks, and conversational messages, return final_answer with route=conversational and a natural Arabic answer. "
-                    "For general explanation questions that do not require private project facts, return final_answer with route=direct_answer and answer normally in Arabic. "
                     "For questions about indexed knowledge or documents, return {\"route\":\"rag_search\"}. "
                     "For questions that need both database facts and documents, return {\"route\":\"hybrid\"}. "
                     "For ambiguous but answerable questions, return clarification with a helpful Arabic question. "
-                    "For operational counts, statistics, details, latest records, filters, grouping, sorting, or aggregation, return a database_query tool-call plan. "
-                    "Never output SQL, SELECT, FROM, executable query text, markdown, explanations, tables not in schema_context, columns not in schema_context, joins, or credentials. "
-                    "Use only retrieved schema_context for database plans. Spring validates and executes plans; you only describe structured intent. "
                     "For identity questions such as who are you, your name, or what project you work on, do not call tools. Return exactly "
                     '{"type":"final_answer","route":"conversational","answer":"أنا مساعد ORBIT AI، شغال على مشروع ORBIT، وأقدر أساعدك في قراءة وتحليل بيانات المشروع حسب الصلاحيات المتاحة.","display":{"type":"text","data":{}},"sources":[]}. '
                     "Schema context documents describe allowed tables, columns, relationships, enum meanings, and whether a table is business, cms_content, or system. "
@@ -209,6 +255,9 @@ class DecisionService:
         if isinstance(decision, dict) and decision.get("route") == "clarification_needed" and "type" not in decision:
             question = decision.get("question") or decision.get("answer") or ("هل يمكنك توضيح المطلوب أكثر؟" if arabic else "Can you clarify what you need?")
             decision = {"type": "clarification", "route": "clarification_needed", "question": str(question)}
+        if isinstance(decision, dict) and decision.get("route") == "forbidden" and "type" not in decision:
+            answer = decision.get("answer") or "لا أستطيع عرض كلمات المرور أو الرموز أو المفاتيح أو أي بيانات حساسة."
+            decision = {"type": "forbidden", "route": "forbidden", "answer": str(answer)}
         if decision.get("type") == "tool_calls":
             decision["local_rag_results"] = []
             decision["final_answer_instruction"] = self._instruction(arabic)
@@ -226,9 +275,20 @@ class DecisionService:
                 plan["limit"] = min(int(limit_value), 20)
                 self._normalize_structured_plan(plan)
                 log.info(
-                    "agent_decision route=database_query intent=llm_structured selected_table=%s operation=%s reason=qwen_plan",
-                    plan.get("table"),
-                    plan.get("operation"),
+                    "agent_decision %s reason=qwen_plan",
+                    route_log_fields(
+                        request_id=request.conversation_id,
+                        normalized_message=self._normalize(request.message),
+                        route="database_query",
+                        entity=",".join(str(item) for item in plan.get("entities", [])) if isinstance(plan.get("entities"), list) else None,
+                        operation=plan.get("operation"),
+                        selected_table=plan.get("table"),
+                        selected_columns=plan.get("columns") if isinstance(plan.get("columns"), list) else [],
+                        filters=plan.get("filters") if isinstance(plan.get("filters"), list) else [],
+                        sort=plan.get("order_by") or [],
+                        limit=plan.get("limit"),
+                        validation_result="pending",
+                    ),
                 )
         elif decision.get("type") == "final_answer":
             decision["route"] = decision.get("route") or "direct_answer"
@@ -236,6 +296,9 @@ class DecisionService:
         elif decision.get("type") == "clarification":
             decision["route"] = decision.get("route") or "clarification_needed"
             log.info("agent_decision route=%s intent=llm_clarification selected_table=none operation=none reason=qwen_primary_decision", decision.get("route"))
+        elif decision.get("type") == "forbidden":
+            decision["route"] = "forbidden"
+            log.info("agent_decision route=forbidden intent=llm_forbidden selected_table=none operation=none reason=qwen_primary_decision")
         elif decision.get("type") == "unsupported":
             decision["route"] = "unsupported"
             log.info("agent_decision route=unsupported intent=llm_unsupported selected_table=none operation=none reason=qwen_primary_decision")
@@ -534,6 +597,14 @@ class DecisionService:
                         if raw_value.strip().lower() == str(value).strip().lower():
                             return label.strip()
         return None
+
+    def _contains_sensitive_request(self, message: str) -> bool:
+        normalized = self._normalize(message)
+        lowered = message.lower()
+        if any(term in lowered or ArabicNormalizer.contains_term(normalized, term) for term in SENSITIVE):
+            return True
+        tokens = re.split(r"[^A-Za-z0-9_]+", lowered)
+        return any(is_sensitive_field(token) for token in tokens if token)
 
     def _normalize(self, value: str) -> str:
         return ArabicNormalizer.normalize(value)

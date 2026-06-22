@@ -173,7 +173,7 @@ class ToolCallsDecision(StrictModel):
 
 class ForbiddenDecision(StrictModel):
     type: Literal["forbidden"]
-    answer: str = "لا أستطيع الوصول إلى بيانات حساسة أو محظورة."
+    answer: str = "لا أستطيع عرض كلمات المرور أو الرموز أو المفاتيح أو أي بيانات حساسة."
     route: DecisionRoute = "forbidden"
     requires_database: bool = False
     requires_rag: bool = False
@@ -191,6 +191,22 @@ class UnsupportedDecision(StrictModel):
 
 
 AgentDecision = Annotated[FinalAnswerDecision | ClarificationDecision | ToolCallsDecision | ForbiddenDecision | UnsupportedDecision, Field(discriminator="type")]
+
+
+class ForbiddenRouteDetails(StrictModel):
+    route: Literal["forbidden"] = "forbidden"
+    reason: str = "sensitive_data_request"
+    sensitive_terms_detected: list[str] = Field(default_factory=list)
+    requires_database: Literal[False] = False
+    requires_rag: Literal[False] = False
+
+
+class ClarificationRouteDetails(StrictModel):
+    route: Literal["clarification", "clarification_needed"] = "clarification_needed"
+    reason: str = "missing_required_context"
+    question: str
+    requires_database: bool = False
+    requires_rag: bool = False
 
 
 class ToolResult(StrictModel):
@@ -259,6 +275,30 @@ class RagSearchResponse(StrictModel):
     results: list[RagChunk]
 
 
+class DatabaseAwareChatRequest(StrictModel):
+    message: str = Field(min_length=1)
+    conversation_id: str | None = None
+    conversation_history: list[ConversationMessage] = Field(default_factory=list)
+    user_context: UserContext | None = None
+    locale: str = "ar"
+
+
+class ExecutedQuerySummary(StrictModel):
+    operation: str
+    tables: list[str] = Field(default_factory=list)
+    columns: list[str] = Field(default_factory=list)
+    row_count: int = Field(ge=0)
+    truncated: bool = False
+
+
+class DatabaseAwareChatResponse(StrictModel):
+    answer: str
+    route: DecisionRoute
+    display: Display = Field(default_factory=lambda: Display(type="text"))
+    executed_query_summary: ExecutedQuerySummary | None = None
+    sources: list[Source] = Field(default_factory=list)
+
+
 class SchemaColumn(StrictModel):
     name: str
     type: str | None = None
@@ -298,24 +338,33 @@ class SchemaTable(StrictModel):
 
 
 class SchemaIngestRequest(StrictModel):
-    tenant_id: str
+    source: str = "construction_mysql"
+    force: bool = False
+    tenant_id: str | None = None
     project_id: str | None = None
-    client_name: str
-    schema_hash: str
+    client_name: str | None = None
+    schema_hash: str | None = None
     generated_at: str | None = None
-    tables: list[SchemaTable]
+    tables: list[SchemaTable] = Field(default_factory=list)
 
 
 class SchemaIngestResponse(StrictModel):
-    client_name: str
+    source: str | None = None
+    client_name: str | None = None
     schema_hash: str
+    alias_hash: str | None = None
+    table_count: int = 0
+    column_count: int = 0
+    sensitive_field_count: int = 0
+    status: Literal["fresh", "stale", "failed"] = "fresh"
     tables_indexed: int
     chunks_indexed: int
 
 
 class SchemaSearchRequest(StrictModel):
+    source: str = "construction_mysql"
     query: str = Field(min_length=1)
-    tenant_id: str
+    tenant_id: str | None = None
     project_id: str | None = None
     client_name: str | None = None
     top_k: int = Field(default=6, ge=1, le=20)
@@ -323,6 +372,19 @@ class SchemaSearchRequest(StrictModel):
 
 class SchemaSearchResponse(StrictModel):
     results: list[RagChunk]
+
+
+class SchemaStatusResponse(StrictModel):
+    source: str
+    database_name: str | None = None
+    schema_hash: str | None = None
+    alias_hash: str | None = None
+    table_count: int = 0
+    column_count: int = 0
+    sensitive_field_count: int = 0
+    status: Literal["fresh", "stale", "failed", "missing"] = "missing"
+    generated_at: str | None = None
+    stale_reason: str | None = None
 
 
 class HealthResponse(StrictModel):

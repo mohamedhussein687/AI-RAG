@@ -1,0 +1,85 @@
+version: 1
+description: >
+  Human-editable schema vocabulary for the database-aware agent. Aliases enrich
+  discovered schema context but never make a nonexistent or unsafe table valid.
+
+aliases:
+  users:
+    arabic:
+      - "المستخدمين"
+      - "المستخدم"
+      - "اليوزرز"
+      - "الاعضاء"
+      - "الموظفين"
+      - "الموظف"
+      - "الحسابات"
+      - "حساب"
+    english:
+      - "users"
+      - "user"
+      - "employees"
+      - "employee"
+      - "staff"
+      - "members"
+      - "accounts"
+      - "account"
+    physical_candidates:
+      - "users"
+      - "organization_employees"
+      - "employees"
+      - "app_users"
+
+  projects:
+    arabic:
+      - "المشاريع"
+      - "المشروع"
+      - "البروجكت"
+      - "مشروعات"
+    english:
+      - "projects"
+      - "project"
+      - "construction projects"
+    physical_candidates:
+      - "projects"
+      - "construction_projects"
+      - "project"
+
+  clients:
+    arabic:
+      - "العملاء"
+      - "العميل"
+      - "كلاينت"
+    english:
+      - "clients"
+      - "client"
+      - "customers"
+      - "customer"
+    physical_candidates:
+      - "clients"
+      - "customers"
+      - "project_clients"
+
+  tasks:
+    arabic:
+      - "المهام"
+      - "المهمة"
+      - "التاسكات"
+    english:
+      - "tasks"
+      - "task"
+      - "todos"
+    physical_candidates:
+      - "tasks"
+      - "project_tasks"
+
+  invoices:
+    arabic:
+      - "الفواتير"
+      - "الفاتورة"
+    english:
+      - "invoices"
+      - "invoice"
+      - "bills"
+    physical_candidates:
+      - "invoices"
+      - "client_invoices"

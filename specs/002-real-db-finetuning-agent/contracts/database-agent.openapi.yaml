@@ -1,0 +1,428 @@
+openapi: 3.0.3
+info:
+  title: Database-Aware AI Agent Contracts
+  version: 0.1.0
+  description: |
+    Contract for schema intelligence, database-aware chat, structured decision,
+    and final answer flows. Public exposure is controlled by the deployment
+    gateway; AI module endpoints remain private unless explicitly documented.
+servers:
+  - url: http://ai-module-api:8000
+    description: Private AI module network
+security:
+  - bearerAuth: []
+paths:
+  /api/schema/ingest:
+    post:
+      summary: Ingest discovered schema intelligence
+      operationId: ingestSchema
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SchemaIngestRequest"
+      responses:
+        "200":
+          description: Schema ingested or already current
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SchemaIngestResponse"
+  /api/schema/search:
+    post:
+      summary: Search schema intelligence for planning context
+      operationId: searchSchema
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SchemaSearchRequest"
+      responses:
+        "200":
+          description: Relevant schema context
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SchemaSearchResponse"
+  /api/schema/status:
+    get:
+      summary: Return schema intelligence status
+      operationId: schemaStatus
+      parameters:
+        - name: source_name
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Current schema status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SchemaStatusResponse"
+  /api/chat:
+    post:
+      summary: Process an end-to-end database-aware chat request
+      operationId: chat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRequest"
+      responses:
+        "200":
+          description: Final chat answer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatResponse"
+  /api/agent/decide:
+    post:
+      summary: Decide route and structured plan
+      operationId: decide
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentDecisionRequest"
+      responses:
+        "200":
+          description: Structured route decision
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentDecisionResponse"
+  /api/agent/final:
+    post:
+      summary: Compose final Arabic answer from safe context and tool results
+      operationId: finalAnswer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FinalAnswerRequest"
+      responses:
+        "200":
+          description: Final answer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatResponse"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    ChatRequest:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          minLength: 1
+        source_name:
+          type: string
+          default: construction_mysql
+        conversation_history:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConversationTurn"
+    ConversationTurn:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [user, assistant, tool]
+        content:
+          type: string
+    ChatResponse:
+      type: object
+      required: [answer, route]
+      properties:
+        answer:
+          type: string
+        route:
+          type: string
+          enum: [conversational, database_query, rag_search, mixed, clarification, forbidden, unsupported]
+        display:
+          type: object
+          additionalProperties: true
+        executed_query_summary:
+          $ref: "#/components/schemas/ExecutedQuerySummary"
+        request_id:
+          type: string
+    AgentDecisionRequest:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+        source_name:
+          type: string
+        schema_context:
+          type: array
+          items:
+            $ref: "#/components/schemas/SchemaSearchHit"
+        conversation_history:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConversationTurn"
+    AgentDecisionResponse:
+      type: object
+      required: [route]
+      properties:
+        route:
+          type: string
+          enum: [conversational, database_query, rag_search, mixed, clarification, forbidden, unsupported]
+        answer:
+          type: string
+        database_plan:
+          $ref: "#/components/schemas/StructuredQueryPlan"
+        reason:
+          type: string
+    StructuredQueryPlan:
+      type: object
+      required: [operation, resolved_tables]
+      properties:
+        operation:
+          type: string
+          enum: [select, count, aggregate]
+        logical_entities:
+          type: array
+          items:
+            type: string
+        resolved_tables:
+          type: array
+          items:
+            type: string
+        columns:
+          type: array
+          items:
+            type: string
+        filters:
+          type: array
+          items:
+            $ref: "#/components/schemas/QueryFilter"
+        joins:
+          type: array
+          items:
+            $ref: "#/components/schemas/QueryJoin"
+        group_by:
+          type: array
+          items:
+            type: string
+        order_by:
+          type: array
+          items:
+            $ref: "#/components/schemas/QueryOrder"
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 200
+        requires_confirmation:
+          type: boolean
+          default: false
+    QueryFilter:
+      type: object
+      required: [column, operator, value]
+      properties:
+        column:
+          type: string
+        operator:
+          type: string
+          enum: ["=", "!=", "<", "<=", ">", ">=", "LIKE", "IN", "IS_NULL", "IS_NOT_NULL", "BETWEEN"]
+        value:
+          nullable: true
+    QueryJoin:
+      type: object
+      required: [left_table, left_column, right_table, right_column]
+      properties:
+        left_table:
+          type: string
+        left_column:
+          type: string
+        right_table:
+          type: string
+        right_column:
+          type: string
+    QueryOrder:
+      type: object
+      required: [column, direction]
+      properties:
+        column:
+          type: string
+        direction:
+          type: string
+          enum: [asc, desc]
+    FinalAnswerRequest:
+      type: object
+      required: [message, route]
+      properties:
+        message:
+          type: string
+        route:
+          type: string
+        database_plan:
+          $ref: "#/components/schemas/StructuredQueryPlan"
+        tool_results:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        validation_error:
+          type: object
+          additionalProperties: true
+    ExecutedQuerySummary:
+      type: object
+      properties:
+        operation:
+          type: string
+        tables:
+          type: array
+          items:
+            type: string
+        columns:
+          type: array
+          items:
+            type: string
+        row_count:
+          type: integer
+        filters_summary:
+          type: array
+          items:
+            type: string
+    SchemaIngestRequest:
+      type: object
+      required: [source_name, schema_hash, tables]
+      properties:
+        source_name:
+          type: string
+        schema_hash:
+          type: string
+        alias_hash:
+          type: string
+        tables:
+          type: array
+          items:
+            $ref: "#/components/schemas/SchemaTable"
+    SchemaIngestResponse:
+      type: object
+      required: [source_name, schema_hash, status]
+      properties:
+        source_name:
+          type: string
+        schema_hash:
+          type: string
+        indexed_chunks:
+          type: integer
+        status:
+          type: string
+          enum: [fresh, indexed, unchanged, failed]
+    SchemaSearchRequest:
+      type: object
+      required: [source_name, query]
+      properties:
+        source_name:
+          type: string
+        query:
+          type: string
+        top_k:
+          type: integer
+          default: 8
+    SchemaSearchResponse:
+      type: object
+      required: [source_name, hits]
+      properties:
+        source_name:
+          type: string
+        schema_hash:
+          type: string
+        hits:
+          type: array
+          items:
+            $ref: "#/components/schemas/SchemaSearchHit"
+    SchemaSearchHit:
+      type: object
+      required: [content, metadata]
+      properties:
+        content:
+          type: string
+        score:
+          type: number
+        metadata:
+          type: object
+          additionalProperties: true
+    SchemaStatusResponse:
+      type: object
+      required: [source_name, status]
+      properties:
+        source_name:
+          type: string
+        schema_hash:
+          type: string
+        alias_hash:
+          type: string
+        status:
+          type: string
+          enum: [missing, fresh, stale, failed]
+        table_count:
+          type: integer
+        column_count:
+          type: integer
+    SchemaTable:
+      type: object
+      required: [name, columns]
+      properties:
+        name:
+          type: string
+        comment:
+          type: string
+        classification:
+          type: string
+          enum: [business, cms_content, system, unknown]
+        approximate_row_count:
+          type: integer
+        columns:
+          type: array
+          items:
+            $ref: "#/components/schemas/SchemaColumn"
+        primary_key:
+          type: array
+          items:
+            type: string
+        foreign_keys:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        indexes:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    SchemaColumn:
+      type: object
+      required: [name, data_type]
+      properties:
+        name:
+          type: string
+        data_type:
+          type: string
+        nullable:
+          type: boolean
+        comment:
+          type: string
+        is_sensitive:
+          type: boolean
+        enum_like_values:
+          type: array
+          items:
+            type: string

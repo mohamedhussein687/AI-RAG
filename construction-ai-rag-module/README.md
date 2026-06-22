@@ -1,6 +1,10 @@
 # Construction AI RAG Module
 
-Server 2 AI + RAG module for the construction management chat system. It owns the AI agent, local document retrieval, local embeddings/reranking interfaces, Qdrant vector search, and PostgreSQL metadata. It does not connect to the construction MySQL database and must not store MySQL credentials.
+Server 2 AI + RAG module for the construction management chat system. It owns
+the AI agent, local document retrieval, local embeddings/reranking interfaces,
+Qdrant vector search, PostgreSQL metadata, schema intelligence, and optional
+database-aware local smoke tooling. Production public access still goes through
+the Spring Gateway; internal services and databases are not exposed publicly.
 
 ## Local setup
 
@@ -73,6 +77,36 @@ python -m ingestion_worker sync --source construction_mysql --mode incremental
 python -m ingestion_worker worker --interval 60
 python -m ingestion_worker status --source construction_mysql
 ```
+
+## Database-aware agent and fine-tuning
+
+The database-aware agent flow uses schema discovery and a fine-tuned or
+fine-tuning-ready Qwen-compatible planner to produce structured query plans.
+Live facts still come from MySQL at runtime through validated read-only
+parameterized queries; fine-tuning teaches domain language, route
+classification, safe planning, refusal, and Arabic answer behavior.
+
+Operator documentation:
+
+- `ai_module/docs/database-aware-agent.md`
+- `ai_module/docs/fine-tuning.md`
+- `ai_module/docs/local-backup-restore.md`
+- `ai_module/docs/server-deployment.md`
+
+Useful commands:
+
+```bash
+cd construction-ai-rag-module/ai_module
+python -m ingestion_worker restore-backup --file /home/hussein/backups/backup.sql --database construction_ai_dev
+python -m ingestion_worker schema-ingest --source construction_mysql
+python -m ingestion_worker schema-status --source construction_mysql
+python -m training.dataset_builder --schema-source construction_mysql --output data/training/db_agent_sft.jsonl
+python -m training.train_lora --config training/configs/qwen_qlora.yaml --dataset data/training/db_agent_sft.jsonl --output outputs/db-agent-qwen-lora
+python -m training.evaluate_agent --adapter outputs/db-agent-qwen-lora --eval data/training/eval.jsonl
+```
+
+Never commit SQL backups, real generated datasets, model weights, adapters,
+checkpoints, `.env` files, or secrets.
 
 ## Security notes
 

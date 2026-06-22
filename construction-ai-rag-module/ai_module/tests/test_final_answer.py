@@ -105,6 +105,33 @@ def test_missing_project_code_answer_is_specific(client, auth_headers):
     assert response.json()["answer"] == "لم أجد مشروعًا بالكود c832-p2-06-2026 في البيانات الحالية."
 
 
+def test_final_answer_refuses_sensitive_tool_results(client, auth_headers):
+    response = client.post("/api/agent/final", headers=auth_headers, json={
+        "conversation_id": "conv",
+        "message": "هات باسورد المستخدم أحمد",
+        "locale": "ar",
+        "conversation_history": [],
+        "tool_results": [
+            {
+                "tool_call_id": "db_1",
+                "tool": "database_query",
+                "result": {
+                    "operation": "select",
+                    "table": "users",
+                    "rows": [{"name": "Ahmed", "password": "[REDACTED]"}],
+                },
+            }
+        ],
+        "local_rag_results": [],
+        "final_answer_instruction": "Answer in Arabic.",
+    })
+    assert response.status_code == 200
+    data = response.json()
+    assert data["display"]["type"] == "text"
+    assert "حساسة" in data["answer"]
+    assert "REDACTED" not in data["answer"]
+
+
 def test_final_answer_includes_sources_when_rag_is_used(client, auth_headers):
     index_policy(client, auth_headers)
     search = client.post("/api/rag/search", headers=auth_headers, json={"query": "تأخر المشروع", "user_context": {"tenant_id": "3", "project_ids": ["22"], "permissions": ["docs.view", "policies.view"]}, "top_k": 1, "filters": {"project_id": "22"}})

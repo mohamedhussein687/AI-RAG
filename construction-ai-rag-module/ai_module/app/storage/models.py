@@ -135,3 +135,76 @@ class RagIndexedDocument(Base):
     indexed_at: Mapped[object | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class SchemaSnapshotRecord(Base):
+    __tablename__ = "schema_snapshots"
+    __table_args__ = (UniqueConstraint("source_name", "schema_hash", "alias_hash", name="uq_schema_snapshot_hash"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_name: Mapped[str] = mapped_column(String, index=True)
+    database_name: Mapped[str] = mapped_column(String, index=True)
+    schema_hash: Mapped[str] = mapped_column(String, index=True)
+    alias_hash: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String, index=True)
+    table_count: Mapped[int] = mapped_column(Integer, default=0)
+    column_count: Mapped[int] = mapped_column(Integer, default=0)
+    relationship_count: Mapped[int] = mapped_column(Integer, default=0)
+    sensitive_field_count: Mapped[int] = mapped_column(Integer, default=0)
+    snapshot_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    generated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class SchemaChunkRecord(Base):
+    __tablename__ = "schema_chunks"
+    __table_args__ = (UniqueConstraint("source_name", "schema_hash", "chunk_id", name="uq_schema_chunk_source_hash"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    chunk_id: Mapped[str] = mapped_column(String, index=True)
+    source_name: Mapped[str] = mapped_column(String, index=True)
+    schema_hash: Mapped[str] = mapped_column(String, index=True)
+    table_name: Mapped[str] = mapped_column(String, index=True)
+    column_names: Mapped[list] = mapped_column(JSON, default=list)
+    content: Mapped[str] = mapped_column(Text)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    qdrant_point_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    indexed_at: Mapped[object | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TrainingRun(Base):
+    __tablename__ = "training_runs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    base_model: Mapped[str] = mapped_column(String, index=True)
+    dataset_path: Mapped[str] = mapped_column(String)
+    output_path: Mapped[str] = mapped_column(String)
+    training_mode: Mapped[str] = mapped_column(String, index=True)
+    status: Mapped[str] = mapped_column(String, index=True)
+    resource_summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    metrics_summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    blocker: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[object | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[object | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class EvaluationResultRecord(Base):
+    __tablename__ = "evaluation_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    evaluated_artifact: Mapped[str] = mapped_column(String)
+    json_validity_rate: Mapped[str] = mapped_column(String)
+    route_accuracy: Mapped[str] = mapped_column(String)
+    table_resolution_accuracy: Mapped[str] = mapped_column(String)
+    sensitive_refusal_rate: Mapped[str] = mapped_column(String)
+    write_operation_rejection_rate: Mapped[str] = mapped_column(String)
+    arabic_answer_score: Mapped[str] = mapped_column(String)
+    smoke_prompt_results: Mapped[dict] = mapped_column(JSON, default=dict)
+    passed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())

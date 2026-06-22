@@ -148,6 +148,31 @@ class SafeDatabaseQueryServiceTest {
   }
 
   @Test
+  void unknownSchemaBackedColumnIsRejectedBeforeExecution() {
+    ClientDataSourceManager manager = mock(ClientDataSourceManager.class);
+    SemanticCatalogService catalogs = mock(SemanticCatalogService.class);
+    RagClient orbit = new RagClient(7, "orbit", "mysql", "db", 3306, "testorbit", "user", "encrypted", "active");
+    when(catalogs.catalog(orbit)).thenReturn(new SemanticCatalog("orbit", 10, "now", "hash", true, List.of(new CatalogTable(
+      "users", "users", "user", List.of("مستخدم", "مستخدمين"), List.of("users", "user"),
+      List.of(new CatalogColumn("name", "name", "string", true, List.of("filter", "sort", "group"), List.of(), false, true)),
+      List.of("count", "list", "select"), true, 2
+    ))));
+
+    SafeDatabaseQueryService service = new SafeDatabaseQueryService(manager, catalogs);
+
+    assertThatThrownBy(() -> service.execute(orbit, Map.of(
+      "plan", Map.of(
+        "operation", "list",
+        "table", "users",
+        "columns", List.of("name", "password"),
+        "limit", 20
+      )
+    )).block())
+      .isInstanceOf(IllegalArgumentException.class)
+      .hasMessageContaining("columns is not allowlisted");
+  }
+
+  @Test
   void orbitMapsLogicalStatusToPhysicalProjectStatus() throws Exception {
     ClientDataSourceManager manager = mock(ClientDataSourceManager.class);
     DataSource dataSource = mock(DataSource.class);

@@ -1,20 +1,31 @@
-import json
+from __future__ import annotations
+
+from pathlib import Path
 from typing import Any
 
 from app.config import Settings
+from app.db.mysql import readonly_mysql_connection
 from app.rag.document_service import DocumentService
-from app.rag.retrieval_service import RetrievalService
 from app.schemas import (
     AccessPolicy,
     DocumentIndexRequest,
-    RagFilters,
-    RagSearchRequest,
+    RagChunk,
     SchemaIngestRequest,
     SchemaIngestResponse,
     SchemaSearchRequest,
     SchemaSearchResponse,
-    UserContext,
+    SchemaStatusResponse,
 )
+from app.schema.schema_discovery import discover_schema_from_connection
+from app.schema.schema_hash import calculate_schema_hash
+from app.schema.schema_ingestion import SchemaChunk, build_schema_chunks
+from app.schema.schema_models import AliasCatalog, SchemaColumn as DiscoveredColumn, SchemaSnapshot, SchemaTable as DiscoveredTable, load_alias_catalog
+from app.schema.schema_search import search_schema_chunks
+
+
+schema_snapshots: dict[str, SchemaSnapshot] = {}
+schema_aliases: dict[str, AliasCatalog] = {}
+schema_chunks: dict[str, list[SchemaChunk]] = {}
 
 
 class SchemaService:
@@ -23,105 +34,177 @@ class SchemaService:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.documents = DocumentService(settings)
-        self.retrieval = RetrievalService(settings)
 
     async def ingest(self, request: SchemaIngestRequest) -> SchemaIngestResponse:
-        tables_indexed = 0
-        chunks_indexed = 0
-        for table in request.tables:
-            content = self._table_document(request, table.model_dump())
-            response = await self.documents.index(
-                DocumentIndexRequest(
-                    tenant_id=request.tenant_id,
-                    project_id=request.project_id,
-                    title=f"Database schema: {request.client_name}.{table.name}",
-                    source_type=self.SOURCE_TYPE,
-                    content=content,
-                    access_policy=AccessPolicy(permissions=["live-data.read", "schema.read"]),
-                    metadata={
-                        "source_identity": f"schema:{request.client_name}:{request.schema_hash}:{table.name}",
-                        "client_name": request.client_name,
-                        "schema_hash": request.schema_hash,
-                        "schema_table": table.name,
-                        "table_category": table.category,
-                        "enabled_for_planning": table.enabledForPlanning,
-                        "version": request.schema_hash,
-                    },
-                )
+        if request.tables:
+            snapshot = self._snapshot_from_request(request)
+            aliases = self._load_aliases()
+        else:
+            result = await self.ingest_current(request.source, force=request.force)
+            return SchemaIngestResponse(**result)
+        return await self._ingest_snapshot(snapshot, aliases, force=request.force)
+
+    async def ingest_current(self, source: str, *, force: bool = False) -> dict[str, Any]:
+        aliases = self._load_aliases()
+        async with readonly_mysql_connection(self.settings) as connection:
+            snapshot = await discover_schema_from_connection(
+                connection,
+                source_name=source,
+                database_name=self.settings.mysql_database,
+                aliases=aliases,
             )
-            tables_indexed += 1
-            chunks_indexed += response.chunks_indexed
-        return SchemaIngestResponse(
-            client_name=request.client_name,
-            schema_hash=request.schema_hash,
-            tables_indexed=tables_indexed,
-            chunks_indexed=chunks_indexed,
-        )
+        response = await self._ingest_snapshot(snapshot, aliases, force=force)
+        return response.model_dump()
 
     async def search(self, request: SchemaSearchRequest) -> SchemaSearchResponse:
-        user_context = UserContext(
-            id=f"schema-search:{request.client_name or request.tenant_id}",
-            tenant_id=request.tenant_id,
-            project_ids=[request.project_id] if request.project_id else [],
-            roles=["schema-reader"],
-            permissions=["live-data.read", "schema.read"],
-        )
-        search = RagSearchRequest(
-            query=request.query,
-            user_context=user_context,
-            top_k=request.top_k,
-            filters=RagFilters(document_types=[self.SOURCE_TYPE], project_id=request.project_id),
-        )
-        results = (await self.retrieval.search(search)).results
+        source = request.client_name or request.source or self.settings.schema_source_name
+        chunks = schema_chunks.get(source, [])
+        matches = search_schema_chunks(chunks, query=request.query, source_name=source, top_k=request.top_k)
+        results = [
+            RagChunk(
+                chunk_id=chunk.chunk_id,
+                document_id=f"schema:{chunk.source_name}:{chunk.schema_hash}:{chunk.table_name}",
+                title=f"Database schema: {chunk.table_name}",
+                source_type=self.SOURCE_TYPE,
+                project_id=request.project_id,
+                chunk_index=idx,
+                text=chunk.content,
+                score=float(len(matches) - idx),
+            )
+            for idx, chunk in enumerate(matches)
+        ]
         return SchemaSearchResponse(results=results)
 
-    def _table_document(self, request: SchemaIngestRequest, table: dict[str, Any]) -> str:
-        columns = table.get("columns") or []
-        public_columns = [c for c in columns if not c.get("sensitive")]
-        sensitive_columns = [str(c.get("name")) for c in columns if c.get("sensitive")]
-        lines = [
-            "Database schema document for Qwen query planning.",
-            f"Client: {request.client_name}",
-            f"Tenant: {request.tenant_id}",
-            f"Project: {request.project_id or ''}",
-            f"Schema hash: {request.schema_hash}",
-            f"Table: {table.get('name')}",
-            f"Category: {table.get('category', 'business')}",
-            f"Enabled for planning: {table.get('enabledForPlanning', True)}",
-            f"Approximate rows: {table.get('approxRows')}",
-            f"Description: {table.get('description') or table.get('name')}",
-            "",
-            "Columns:",
-        ]
-        for column in public_columns:
-            known_values = column.get("knownValues") or {}
-            lines.append(
-                "- "
-                + json.dumps(
-                    {
-                        "name": column.get("name"),
-                        "type": column.get("type") or column.get("columnType"),
-                        "nullable": column.get("nullable"),
-                        "primary_key": column.get("primaryKey"),
-                        "description": column.get("description"),
-                        "known_values": known_values,
+    async def status(self, source: str | None = None) -> SchemaStatusResponse:
+        source_name = source or self.settings.schema_source_name
+        snapshot = schema_snapshots.get(source_name)
+        if snapshot is None:
+            return SchemaStatusResponse(source=source_name, database_name=self.settings.mysql_database or None, status="missing")
+        aliases = self._load_aliases()
+        current_hash = calculate_schema_hash(snapshot, aliases)
+        stale = current_hash != snapshot.schema_hash or aliases.alias_hash != snapshot.alias_hash
+        return SchemaStatusResponse(
+            source=source_name,
+            database_name=snapshot.database_name,
+            schema_hash=snapshot.schema_hash,
+            alias_hash=snapshot.alias_hash,
+            table_count=snapshot.table_count,
+            column_count=snapshot.column_count,
+            sensitive_field_count=snapshot.sensitive_field_count,
+            status="stale" if stale else snapshot.status,
+            generated_at=snapshot.generated_at.isoformat(),
+            stale_reason="schema_or_alias_hash_changed" if stale else None,
+        )
+
+    async def _ingest_snapshot(self, snapshot: SchemaSnapshot, aliases: AliasCatalog, *, force: bool = False) -> SchemaIngestResponse:
+        existing = schema_snapshots.get(snapshot.source_name)
+        if existing and existing.schema_hash == snapshot.schema_hash and existing.alias_hash == snapshot.alias_hash and not force:
+            chunks = schema_chunks.get(snapshot.source_name, [])
+            return SchemaIngestResponse(
+                source=snapshot.source_name,
+                client_name=snapshot.source_name,
+                schema_hash=snapshot.schema_hash,
+                alias_hash=snapshot.alias_hash,
+                table_count=snapshot.table_count,
+                column_count=snapshot.column_count,
+                sensitive_field_count=snapshot.sensitive_field_count,
+                tables_indexed=snapshot.table_count,
+                chunks_indexed=len(chunks),
+                status="fresh",
+            )
+
+        chunks = build_schema_chunks(snapshot, aliases)
+        indexed_chunks = 0
+        for chunk in chunks:
+            response = await self.documents.index(
+                DocumentIndexRequest(
+                    tenant_id=snapshot.source_name,
+                    project_id=snapshot.source_name,
+                    title=f"Database schema: {snapshot.source_name}.{chunk.table_name}",
+                    source_type=self.SOURCE_TYPE,
+                    content=chunk.content,
+                    access_policy=AccessPolicy(permissions=["live-data.read", "schema.read"]),
+                    metadata={
+                        "source_identity": f"schema:{snapshot.source_name}:{snapshot.schema_hash}:{chunk.table_name}",
+                        "client_name": snapshot.source_name,
+                        "schema_hash": snapshot.schema_hash,
+                        "schema_table": chunk.table_name,
+                        "table_category": chunk.metadata.get("classification"),
+                        "enabled_for_planning": chunk.metadata.get("classification") != "system",
+                        "version": snapshot.schema_hash,
+                        "is_active": True,
                     },
-                    ensure_ascii=False,
-                    sort_keys=True,
                 )
             )
-        if sensitive_columns:
-            lines.append("")
-            lines.append("Sensitive columns excluded from query plans: " + ", ".join(sorted(sensitive_columns)))
-        lines.extend(
-            [
-                "",
-                "Primary key: " + json.dumps(table.get("primaryKey") or [], ensure_ascii=False),
-                "Foreign keys: " + json.dumps(table.get("foreignKeys") or [], ensure_ascii=False, sort_keys=True),
-                "Indexes: " + json.dumps(table.get("indexes") or [], ensure_ascii=False, sort_keys=True),
-                "",
-                "Planning rules: use this table only when it matches the user's business question. "
-                "Never use sensitive columns. Never output SQL. Return only a structured database_plan.",
-            ]
+            indexed_chunks += response.chunks_indexed
+        schema_snapshots[snapshot.source_name] = snapshot
+        schema_aliases[snapshot.source_name] = aliases
+        schema_chunks[snapshot.source_name] = chunks
+        return SchemaIngestResponse(
+            source=snapshot.source_name,
+            client_name=snapshot.source_name,
+            schema_hash=snapshot.schema_hash,
+            alias_hash=snapshot.alias_hash,
+            table_count=snapshot.table_count,
+            column_count=snapshot.column_count,
+            sensitive_field_count=snapshot.sensitive_field_count,
+            tables_indexed=snapshot.table_count,
+            chunks_indexed=indexed_chunks,
+            status="fresh",
         )
-        return "\n".join(lines)
+
+    def _snapshot_from_request(self, request: SchemaIngestRequest) -> SchemaSnapshot:
+        tables = []
+        for table in request.tables:
+            columns = [
+                DiscoveredColumn(
+                    name=column.name,
+                    data_type=column.type or column.columnType or "",
+                    nullable=True if column.nullable is None else column.nullable,
+                    is_primary_key=bool(column.primaryKey),
+                    is_sensitive=column.sensitive,
+                    enum_like_values=[str(value) for value in column.knownValues] if isinstance(column.knownValues, list) else list(column.knownValues.keys()),
+                    safe_sample_values=[str(value) for value in column.knownValues.values()] if isinstance(column.knownValues, dict) else [str(value) for value in column.knownValues],
+                    semantic_description=column.description,
+                )
+                for column in table.columns
+            ]
+            tables.append(
+                DiscoveredTable(
+                    name=table.name,
+                    classification=_category(table.category),
+                    approximate_row_count=table.approxRows,
+                    primary_key_columns=table.primaryKey,
+                    business_description=table.description,
+                    columns=columns,
+                )
+            )
+        aliases = self._load_aliases()
+        snapshot = SchemaSnapshot(
+            source_name=request.client_name or request.source,
+            database_name=self.settings.mysql_database or request.client_name or request.source,
+            schema_hash=request.schema_hash or "pending",
+            alias_hash=aliases.alias_hash,
+            tables=tables,
+        )
+        if not request.schema_hash:
+            snapshot = snapshot.model_copy(update={"schema_hash": calculate_schema_hash(snapshot, aliases)})
+        return snapshot
+
+    def _load_aliases(self) -> AliasCatalog:
+        return load_alias_catalog(_resolve_path(self.settings.schema_aliases_path))
+
+
+def _category(value: str) -> str:
+    return value if value in {"business", "cms_content", "system", "unknown"} else "unknown"
+
+
+def _resolve_path(path: str) -> Path:
+    raw = Path(path)
+    if raw.exists() or raw.is_absolute():
+        return raw
+    module_root = Path(__file__).resolve().parents[2]
+    candidate = module_root / path
+    if candidate.exists():
+        return candidate
+    return raw

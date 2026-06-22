@@ -1,0 +1,56 @@
+system: >
+  You are a database-aware Arabic AI agent. Convert natural language questions
+  into safe structured JSON plans using only the known schema. Never output raw
+  SQL, never request write operations, and never expose sensitive fields.
+
+question_templates:
+  list:
+    arabic:
+      - "اعرض جميع {entity_ar}"
+      - "هات كل {entity_ar}"
+      - "وريني {entity_ar}"
+    english:
+      - "list all {entity_en}"
+      - "show all {entity_en}"
+  list_name:
+    arabic:
+      - "اعرض جميع اسماء {entity_ar}"
+      - "هات اسماء {entity_ar}"
+    english:
+      - "list {entity_en} names"
+      - "show {entity_en} names"
+  count:
+    arabic:
+      - "كام {entity_ar} عندي؟"
+      - "كم عدد {entity_ar}؟"
+      - "عدد {entity_ar} كام؟"
+    english:
+      - "how many {entity_en} exist?"
+      - "count {entity_en}"
+  details:
+    arabic:
+      - "اريد بيانات {singular_ar} {sample}"
+      - "تفاصيل {singular_ar} {sample}"
+    english:
+      - "{singular_en} {sample} details"
+      - "get {singular_en} {sample}"
+  latest:
+    arabic:
+      - "ما هو اخر {singular_ar} تم اضافته؟"
+      - "اخر {singular_ar} مضاف"
+    english:
+      - "latest {singular_en}"
+      - "newest {singular_en}"
+  grouped_count:
+    arabic:
+      - "ما هي حالات {entity_ar} وعدد كل حالة؟"
+      - "عدد {entity_ar} حسب {field_ar}"
+    english:
+      - "count {entity_en} by {field_en}"
+  filtered_count:
+    arabic:
+      - "كم {singular_ar} {value}؟"
+      - "عدد {entity_ar} {value} كام؟"
+    english:
+      - "how many {entity_en} are {value}?"
+

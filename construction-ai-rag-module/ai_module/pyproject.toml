@@ -18,6 +18,34 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8", "pytest-asyncio>=0.23", "pytest-httpx>=0.30", "respx>=0.21"]
+mysql = ["PyMySQL>=1.1", "cryptography>=42"]
+dataset = ["jsonschema>=4.22", "orjson>=3.10"]
+training = [
+  "accelerate>=0.34",
+  "bitsandbytes>=0.43; platform_system == 'Linux'",
+  "datasets>=2.20",
+  "peft>=0.12",
+  "torch>=2.3",
+  "transformers>=4.44",
+  "trl>=0.10",
+]
+all = [
+  "pytest>=8",
+  "pytest-asyncio>=0.23",
+  "pytest-httpx>=0.30",
+  "respx>=0.21",
+  "PyMySQL>=1.1",
+  "cryptography>=42",
+  "jsonschema>=4.22",
+  "orjson>=3.10",
+  "accelerate>=0.34",
+  "bitsandbytes>=0.43; platform_system == 'Linux'",
+  "datasets>=2.20",
+  "peft>=0.12",
+  "torch>=2.3",
+  "transformers>=4.44",
+  "trl>=0.10",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -25,4 +53,4 @@ testpaths = ["tests"]
 pythonpath = ["."]
 
 [tool.setuptools.packages.find]
-include = ["app*", "ingestion_worker*"]
+include = ["app*", "ingestion_worker*", "training*"]

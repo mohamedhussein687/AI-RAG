@@ -7,6 +7,7 @@ from app.config import Settings, get_settings
 from app.common.logging import configure_logging
 from app.schemas import AgentDecideRequest, AgentFinalRequest, DocumentIndexRequest, RagSearchRequest, HealthResponse, SchemaIngestRequest, SchemaSearchRequest
 from app.agent.decision_service import DecisionService
+from app.agent.database_chat_service import DatabaseChatService
 from app.agent.final_answer_service import FinalAnswerService
 from app.rag.document_service import DocumentService
 from app.rag.retrieval_service import RetrievalService
@@ -98,18 +99,11 @@ async def search_schema(request: SchemaSearchRequest, settings: Settings = Depen
     return await SchemaService(settings).search(request)
 
 
+@app.get("/api/schema/status", dependencies=[Depends(require_module_token)])
+async def schema_status(source: str = "construction_mysql", settings: Settings = Depends(get_settings)):
+    return await SchemaService(settings).status(source)
+
+
 @app.post("/api/chat", dependencies=[Depends(require_module_token)])
 async def module_chat(request: AgentDecideRequest, settings: Settings = Depends(get_settings)):
-    decision = await DecisionService(settings).decide(request)
-    if getattr(decision, "type", None) != "tool_calls":
-        return decision
-    final_request = AgentFinalRequest(
-        conversation_id=request.conversation_id,
-        message=request.message,
-        locale=request.locale,
-        conversation_history=request.conversation_history,
-        tool_results=[],
-        local_rag_results=getattr(decision, "local_rag_results", []),
-        final_answer_instruction=getattr(decision, "final_answer_instruction", None),
-    )
-    return await FinalAnswerService(settings).final(final_request)
+    return await DatabaseChatService(settings).chat(request)

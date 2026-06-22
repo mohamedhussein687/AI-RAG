@@ -1,5 +1,5 @@
 from functools import lru_cache
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -49,9 +49,24 @@ class Settings(BaseSettings):
     mysql_host: str = Field(default="", alias="MYSQL_HOST")
     mysql_port: int = Field(default=3306, alias="MYSQL_PORT")
     mysql_database: str = Field(default="", alias="MYSQL_DATABASE")
-    mysql_username: str = Field(default="", alias="MYSQL_USERNAME")
+    mysql_username: str = Field(default="", validation_alias=AliasChoices("MYSQL_USER", "MYSQL_USERNAME"))
     mysql_password: str = Field(default="", alias="MYSQL_PASSWORD")
     mysql_connect_timeout_seconds: int = Field(default=10, alias="MYSQL_CONNECT_TIMEOUT_SECONDS")
+    mysql_query_timeout_seconds: int = Field(default=15, alias="MYSQL_QUERY_TIMEOUT_SECONDS")
+    mysql_max_rows: int = Field(default=200, alias="MYSQL_MAX_ROWS")
+    schema_aliases_path: str = Field(default="../config/schema_aliases.yml", alias="SCHEMA_ALIASES_PATH")
+    schema_source_name: str = Field(default="construction_mysql", alias="SCHEMA_SOURCE_NAME")
+    dataset_output_path: str = Field(default="data/training/db_agent_sft.jsonl", alias="TRAINING_DATASET_PATH")
+    training_output_dir: str = Field(default="outputs/db-agent-qwen-lora", alias="TRAINING_OUTPUT_DIR")
+    training_base_model: str = Field(default="", alias="TRAINING_BASE_MODEL")
+    llm_provider: str = Field(default="openai_compatible", alias="LLM_PROVIDER")
+    llm_model_name: str = Field(default="", alias="LLM_MODEL_NAME")
+    llm_fine_tuned: bool = Field(default=False, alias="LLM_FINE_TUNED")
+    llm_max_tokens: int = Field(default=1200, alias="LLM_MAX_TOKENS")
+    llm_adapter_path: str = Field(default="", alias="LLM_ADAPTER_PATH")
+    llm_merged_model_path: str = Field(default="", alias="LLM_MERGED_MODEL_PATH")
+    llm_adapter_serving_mode: str = Field(default="served_model", alias="LLM_ADAPTER_SERVING_MODE")
+    llm_training_report_path: str = Field(default="", alias="LLM_TRAINING_REPORT_PATH")
 
     fake_llm: bool = Field(default=True, alias="FAKE_LLM")
     fake_embeddings: bool = Field(default=True, alias="FAKE_EMBEDDINGS")
@@ -69,6 +84,8 @@ class Settings(BaseSettings):
             errors.append("FAKE_EMBEDDINGS must be false")
         if self.fake_reranker:
             errors.append("FAKE_RERANKER must be false")
+        if self.llm_fine_tuned and not (self.llm_model_name or self.llm_adapter_path or self.llm_merged_model_path):
+            errors.append("LLM_FINE_TUNED requires LLM_MODEL_NAME, LLM_ADAPTER_PATH, or LLM_MERGED_MODEL_PATH")
         if self.postgres_url.startswith("sqlite"):
             errors.append("POSTGRES_URL must use PostgreSQL")
         if self.qdrant_url.startswith(":memory:"):

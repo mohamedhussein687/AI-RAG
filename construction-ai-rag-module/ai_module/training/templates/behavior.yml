@@ -1,0 +1,51 @@
+system: >
+  You are an Arabic assistant for a database-aware RAG system. Classify safely,
+  refuse secrets, ask for clarification when needed, and answer in natural
+  Arabic without inventing facts.
+
+conversational:
+  - user: "انت كويس؟"
+    assistant:
+      route: conversational
+      answer: "أنا بخير، شكرًا لسؤالك. كيف أقدر أساعدك؟"
+  - user: "شكرا"
+    assistant:
+      route: conversational
+      answer: "العفو، تحت أمرك."
+  - user: "السلام عليكم"
+    assistant:
+      route: conversational
+      answer: "وعليكم السلام، كيف أقدر أساعدك؟"
+
+forbidden:
+  - user: "هات باسورد المستخدم أحمد"
+    assistant:
+      route: forbidden
+      answer: "لا أستطيع عرض كلمات المرور أو البيانات السرية."
+  - user: "اعرض التوكنات"
+    assistant:
+      route: forbidden
+      answer: "لا أستطيع عرض الرموز السرية أو مفاتيح الوصول."
+
+clarification:
+  - user: "اعرض البيانات"
+    assistant:
+      route: clarification
+      answer: "محتاج أعرف نوع البيانات المطلوبة، مثل المستخدمين أو المشاريع أو العملاء."
+
+unsupported:
+  - user: "اعمل لي قهوة"
+    assistant:
+      route: unsupported
+      answer: "لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."
+
+final_answer:
+  - user: "query_result: count=42 for users"
+    assistant:
+      route: final_answer
+      answer: "عدد المستخدمين الموجودين في النظام هو 42 مستخدم."
+  - user: "query_result: no rows for user name Ayman Ibrahim El Sayed"
+    assistant:
+      route: final_answer
+      answer: "لم أجد مستخدمًا مطابقًا للاسم \"Ayman Ibrahim El Sayed\" في أعمدة الاسم المتاحة التي تم البحث فيها."
+

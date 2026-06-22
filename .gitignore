@@ -40,7 +40,11 @@ id_ed25519*
 
 # Runtime data and generated state
 models/
-data/
+checkpoints/
+outputs/
+lora_adapters/
+wandb/
+runs/
 logs/
 backups/
 qdrant_storage/
@@ -48,6 +52,15 @@ postgres_data/
 *.sqlite
 *.sqlite3
 *.db
+*.sql
+*.dump
+*.backup
+*.tar
+*.gz
+data/training/*.jsonl
+!data/training/sample_fake.jsonl
+construction-ai-rag-module/ai_module/data/training/*.jsonl
+!construction-ai-rag-module/ai_module/data/training/sample_fake.jsonl
 
 # Docker/runtime output
 *.log

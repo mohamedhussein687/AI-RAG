@@ -3,6 +3,7 @@ from .citation_validator import answer_with_citations, validate_answer
 from .prompt_builder import prefer_arabic
 from app.clients.llm_client import LlmClient
 from app.config import Settings
+from app.schema.schema_models import is_sensitive_field
 import json
 
 
@@ -15,10 +16,19 @@ class FinalAnswerService:
         arabic = prefer_arabic(request.message, request.locale)
         has_db = bool(request.tool_results)
         has_rag = bool(request.local_rag_results)
+        if self._contains_sensitive_tool_result(request):
+            answer = (
+                "لا أستطيع عرض كلمات المرور أو الرموز أو المفاتيح أو أي بيانات حساسة."
+                if arabic
+                else "I cannot display passwords, tokens, keys, or other sensitive data."
+            )
+            return AgentFinalResponse(answer=answer, display=Display(type="text", data={"refusal": "sensitive_tool_result"}), sources=[])
         if has_db and has_rag:
             display_type = "mixed"
         elif has_rag:
             display_type = "answer_with_sources"
+        elif self._has_metric(request):
+            display_type = "metric"
         elif self._has_rows(request):
             display_type = "table"
         elif has_db:
@@ -43,7 +53,13 @@ class FinalAnswerService:
                 if no_rows_answer:
                     answer = no_rows_answer
                 else:
-                    answer = self._deterministic_database_answer(request, arabic) or await self._qwen_database_answer(request, arabic)
+                    empty_search_answer = self._empty_database_search_answer(request, arabic)
+                    if empty_search_answer:
+                        answer = empty_search_answer
+                    elif self.settings.fake_llm:
+                        answer = self._deterministic_database_answer(request, arabic) or await self._qwen_database_answer(request, arabic)
+                    else:
+                        answer = await self._qwen_database_answer(request, arabic) or self._deterministic_database_answer(request, arabic)
         else:
             answer = "لا توجد نتائج كافية للإجابة." if arabic else "There is not enough evidence to answer."
 
@@ -57,6 +73,29 @@ class FinalAnswerService:
         for result in request.tool_results:
             if isinstance(result.result, dict) and isinstance(result.result.get("rows"), list):
                 return True
+        return False
+
+    def _has_metric(self, request: AgentFinalRequest) -> bool:
+        for result in request.tool_results:
+            if isinstance(result.result, dict) and (result.result.get("operation") == "count" or "count" in result.result):
+                return True
+        return False
+
+    def _contains_sensitive_tool_result(self, request: AgentFinalRequest) -> bool:
+        for item in request.tool_results:
+            if self._contains_sensitive_value(item.result):
+                return True
+        return False
+
+    def _contains_sensitive_value(self, value) -> bool:
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                if is_sensitive_field(str(key)):
+                    return True
+                if self._contains_sensitive_value(nested):
+                    return True
+        if isinstance(value, list):
+            return any(self._contains_sensitive_value(item) for item in value)
         return False
 
     def _summarize_tool_results(self, request: AgentFinalRequest, arabic: bool) -> str:
@@ -130,17 +169,44 @@ class FinalAnswerService:
                 return f"لم أجد مشروعًا باسم أو كود {lookup} في البيانات الحالية." if arabic else f"No project named or coded {lookup} was found in the current data."
         return None
 
+    def _empty_database_search_answer(self, request: AgentFinalRequest, arabic: bool) -> str | None:
+        for result in request.tool_results:
+            payload = result.result
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("operation") not in {"select", "details"} or payload.get("rows") != []:
+                continue
+            filters = []
+            summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+            for item in summary.get("filters", []) if isinstance(summary, dict) else []:
+                if isinstance(item, dict) and item.get("value") not in (None, ""):
+                    filters.append((item.get("column"), item.get("value")))
+            if not filters:
+                return None
+            columns = ", ".join(str(column) for column, _value in filters if column)
+            values = "، ".join(f'"{value}"' for _column, value in filters)
+            if arabic:
+                return f"لم أجد نتائج مطابقة للبحث عن {values} في الأعمدة المتاحة: {columns}."
+            return f"No matching rows were found for {values} in the available columns: {columns}."
+        return None
+
     def _deterministic_database_answer(self, request: AgentFinalRequest, arabic: bool) -> str | None:
         if not arabic:
             return None
         for result in request.tool_results:
             payload = result.result
-            if not isinstance(payload, dict) or payload.get("intent") != "latest_project":
-                if not isinstance(payload, dict) or payload.get("intent") != "project_details" or payload.get("lookup_type") != "project_code":
-                    continue
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("operation") == "count" and "count" in payload:
+                table = payload.get("table") or "السجلات"
+                return f"العدد الحالي في {table} هو {payload.get('count')}."
             rows = payload.get("rows")
             if not isinstance(rows, list) or not rows:
                 return None
+            if payload.get("operation") in {"list", "select"} and payload.get("intent") not in {"latest_project", "project_details"}:
+                return self._rows_answer(payload, arabic)
+            if payload.get("intent") != "latest_project" and (payload.get("intent") != "project_details" or payload.get("lookup_type") != "project_code"):
+                continue
             row = rows[0] if isinstance(rows[0], dict) else {}
             if payload.get("intent") == "latest_project":
                 title = row.get("title") or "بدون اسم"
@@ -172,3 +238,20 @@ class FinalAnswerService:
                 parts.append(f"آخر تحديث: {row.get('updated_at')}")
             return "، ".join(parts) + "."
         return None
+
+    def _rows_answer(self, payload: dict, arabic: bool) -> str | None:
+        rows = payload.get("rows")
+        if not isinstance(rows, list) or not rows or not all(isinstance(row, dict) for row in rows):
+            return None
+        table = str(payload.get("table") or "records")
+        visible_rows = rows[:10]
+        if not arabic:
+            return f"Found {len(rows)} row(s) in {table}: " + "; ".join(", ".join(f"{k}: {v}" for k, v in row.items()) for row in visible_rows)
+        names = []
+        for row in visible_rows:
+            if len(row) == 1:
+                names.append(str(next(iter(row.values()))))
+            else:
+                names.append("، ".join(f"{key}: {value}" for key, value in row.items()))
+        prefix = f"وجدت {len(rows)} نتيجة في {table}: "
+        return prefix + "؛ ".join(names) + "."

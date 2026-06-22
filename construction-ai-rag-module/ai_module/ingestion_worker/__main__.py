@@ -6,7 +6,10 @@ import json
 import logging
 
 from app.common.logging import configure_logging
+from ingestion_worker.restore_backup import RestoreBackupError, run_restore_backup
 from ingestion_worker.sync import RagSyncService, run_loop
+from ingestion_worker.smoke_chat import run_smoke_chat
+from ingestion_worker.schema_commands import run_schema_command
 
 
 def main() -> None:
@@ -30,6 +33,25 @@ def main() -> None:
     status.add_argument("--table", default=None)
     status.add_argument("--json", action="store_true")
 
+    restore = subcommands.add_parser("restore-backup", help="restore an external SQL backup into a local/server MySQL database")
+    restore.add_argument("--file", required=True)
+    restore.add_argument("--database", required=True)
+
+    schema_ingest = subcommands.add_parser("schema-ingest", help="discover and ingest schema intelligence")
+    schema_ingest.add_argument("--source", default="construction_mysql")
+    schema_ingest.add_argument("--force", action="store_true")
+
+    schema_status = subcommands.add_parser("schema-status", help="show schema intelligence status")
+    schema_status.add_argument("--source", default="construction_mysql")
+    schema_status.add_argument("--json", action="store_true")
+
+    schema_refresh = subcommands.add_parser("schema-refresh", help="force schema rediscovery and ingestion")
+    schema_refresh.add_argument("--source", default="construction_mysql")
+
+    smoke_chat = subcommands.add_parser("smoke-chat", help="run a local database-aware chat smoke prompt")
+    smoke_chat.add_argument("--message", required=True)
+    smoke_chat.add_argument("--source", default="construction_mysql")
+
     args = parser.parse_args()
     if args.command == "sync":
         asyncio.run(_sync_once(args.source, args.table, args.mode, args.dry_run))
@@ -37,6 +59,19 @@ def main() -> None:
         asyncio.run(run_loop(interval=args.interval, source_name=args.source, dry_run=args.dry_run))
     elif args.command == "status":
         asyncio.run(_status(args.source, args.table, args.json))
+    elif args.command == "restore-backup":
+        try:
+            raise SystemExit(run_restore_backup(args.file, args.database))
+        except RestoreBackupError as exc:
+            raise SystemExit(f"restore-backup failed: {exc}") from exc
+    elif args.command == "schema-ingest":
+        raise SystemExit(asyncio.run(run_schema_command("schema-ingest", source=args.source, force=args.force, as_json=True)))
+    elif args.command == "schema-status":
+        raise SystemExit(asyncio.run(run_schema_command("schema-status", source=args.source, as_json=args.json)))
+    elif args.command == "schema-refresh":
+        raise SystemExit(asyncio.run(run_schema_command("schema-refresh", source=args.source, force=True, as_json=True)))
+    elif args.command == "smoke-chat":
+        raise SystemExit(run_smoke_chat(args.message, source=args.source))
 
 
 async def _sync_once(source: str | None, table: str | None, mode: str, dry_run: bool) -> None:
@@ -83,7 +118,6 @@ async def _status(source: str | None, table: str | None, as_json: bool) -> None:
             "status={status} last_success_at={last_success_at} indexed={indexed_documents} "
             "inactive={inactive_documents} last_error={last_error}".format(**row)
         )
-
 
 if __name__ == "__main__":
     main()
