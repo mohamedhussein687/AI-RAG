@@ -49,6 +49,26 @@ def test_empty_project_details_returns_clear_arabic_message(client, auth_headers
     assert response.json()["answer"] == "لم أجد مشروعًا باسم أو كود test60 في البيانات الحالية."
 
 
+def test_latest_project_answer_is_deterministic_arabic(client, auth_headers, monkeypatch):
+    async def should_not_call_llm(*_args, **_kwargs):
+        raise AssertionError("latest_project answer should be formatted deterministically")
+
+    from app.clients.llm_client import LlmClient
+    monkeypatch.setattr(LlmClient, "chat_json", should_not_call_llm)
+    response = client.post("/api/agent/final", headers=auth_headers, json={
+        "conversation_id": "conv",
+        "message": "ما هو اخر مشروع تم اضافتة",
+        "locale": "ar",
+        "conversation_history": [],
+        "tool_results": [{"tool_call_id": "db_1", "tool": "database_query", "result": {"operation": "select", "intent": "latest_project", "table": "projects", "rows": [{"title": "costa", "project_code": "c832 - p2 - 06-2026", "status": 2, "created_at": "2026-06-19", "updated_at": "2026-06-20"}]}}],
+        "local_rag_results": [],
+        "final_answer_instruction": "Answer in Arabic.",
+    })
+    assert response.status_code == 200
+    answer = response.json()["answer"]
+    assert answer == "آخر مشروع تم إضافته هو: costa، الكود: c832 - p2 - 06-2026، الحالة: 2، تاريخ الإضافة: 2026-06-19، آخر تحديث: 2026-06-20."
+
+
 def test_final_answer_includes_sources_when_rag_is_used(client, auth_headers):
     index_policy(client, auth_headers)
     search = client.post("/api/rag/search", headers=auth_headers, json={"query": "تأخر المشروع", "user_context": {"tenant_id": "3", "project_ids": ["22"], "permissions": ["docs.view", "policies.view"]}, "top_k": 1, "filters": {"project_id": "22"}})

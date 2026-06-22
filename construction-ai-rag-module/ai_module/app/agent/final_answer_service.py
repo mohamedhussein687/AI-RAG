@@ -39,7 +39,7 @@ class FinalAnswerService:
             if no_rows_answer:
                 answer = no_rows_answer
             else:
-                answer = await self._qwen_database_answer(request, arabic)
+                answer = self._deterministic_database_answer(request, arabic) or await self._qwen_database_answer(request, arabic)
         else:
             answer = "لا توجد نتائج كافية للإجابة." if arabic else "There is not enough evidence to answer."
 
@@ -111,4 +111,28 @@ class FinalAnswerService:
             if isinstance(payload, dict) and payload.get("intent") == "project_details" and payload.get("rows") == []:
                 lookup = payload.get("lookup_value") or "المطلوب"
                 return f"لم أجد مشروعًا باسم أو كود {lookup} في البيانات الحالية." if arabic else f"No project named or coded {lookup} was found in the current data."
+        return None
+
+    def _deterministic_database_answer(self, request: AgentFinalRequest, arabic: bool) -> str | None:
+        if not arabic:
+            return None
+        for result in request.tool_results:
+            payload = result.result
+            if not isinstance(payload, dict) or payload.get("intent") != "latest_project":
+                continue
+            rows = payload.get("rows")
+            if not isinstance(rows, list) or not rows:
+                return "لا توجد مشاريع في البيانات الحالية."
+            row = rows[0] if isinstance(rows[0], dict) else {}
+            title = row.get("title") or "بدون اسم"
+            parts = [f"آخر مشروع تم إضافته هو: {title}"]
+            if row.get("project_code"):
+                parts.append(f"الكود: {row.get('project_code')}")
+            if row.get("status") is not None:
+                parts.append(f"الحالة: {row.get('status')}")
+            if row.get("created_at"):
+                parts.append(f"تاريخ الإضافة: {row.get('created_at')}")
+            if row.get("updated_at"):
+                parts.append(f"آخر تحديث: {row.get('updated_at')}")
+            return "، ".join(parts) + "."
         return None
