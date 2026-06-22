@@ -11,6 +11,7 @@ from .json_guard import validate_decision
 from .normalization import ArabicNormalizer
 from .prompt_builder import build_database_planning_prompt, prefer_arabic
 from .routing import MessageRouter
+from .schema_planner import SchemaAwarePlanner
 from app.rag.retrieval_service import RetrievalService
 from app.schemas import RagSearchRequest, RagFilters
 from app.schema.schema_service import SchemaService
@@ -101,9 +102,17 @@ class DecisionService:
 
         schema_context = await self._schema_context(request, understanding_message)
         qwen_decision = await self._qwen_primary_decision(request, arabic, understanding_message, schema_context)
+        if qwen_decision is None and self._looks_like_database_request(understanding_message):
+            fallback = self._database_request_fallback(request, understanding_message, arabic, reason="empty_llm_response")
+            if fallback is not None:
+                return fallback
         if qwen_decision is not None:
             if isinstance(qwen_decision, dict) and qwen_decision.get(ROUTE_ONLY) in {"rag_search", "hybrid"}:
                 return await self._rag_decision(request, arabic, route=str(qwen_decision[ROUTE_ONLY]))
+            if self._is_generic_unsupported(qwen_decision) and self._looks_like_database_request(understanding_message):
+                fallback = self._database_request_fallback(request, understanding_message, arabic, reason="qwen_unsupported")
+                if fallback is not None:
+                    return fallback
             return qwen_decision
 
         is_doc = any(term.lower() in text for term in DOC_TERMS)
@@ -125,6 +134,54 @@ class DecisionService:
 
         question = "هل يمكنك توضيح البيانات أو المستندات المطلوبة؟" if arabic else "Can you clarify what data or documents you need?"
         return validate_decision(ClarificationDecision(type="clarification", question=question).model_dump())
+
+    def _database_request_fallback(self, request: AgentDecideRequest, understanding_message: str, arabic: bool, *, reason: str):
+        if not self._has_database_catalog(request):
+            return None
+        plan = SchemaAwarePlanner().plan(understanding_message, request.semantic_catalog, min(request.rules.max_rows, 20))
+        if plan and plan.get("type") == "tool_calls":
+            plan["route"] = "database_query"
+            plan["final_answer_instruction"] = self._instruction(arabic)
+            plan.pop("intent", None)
+            plan.pop("reason", None)
+            for i, call in enumerate(plan.get("tool_calls", []), start=1):
+                call.setdefault("id", f"db_{i}")
+                call["tool"] = "database_query"
+                raw_plan = call.get("plan", {})
+                raw_plan["limit"] = min(int(raw_plan.get("limit") or request.rules.max_rows), 20)
+                self._normalize_structured_plan(raw_plan)
+            log.info(
+                "agent_decision route=database_query intent=fallback_database selected_table=%s operation=%s reason=%s",
+                plan.get("tool_calls", [{}])[0].get("plan", {}).get("table") if plan.get("tool_calls") else "none",
+                plan.get("tool_calls", [{}])[0].get("plan", {}).get("operation") if plan.get("tool_calls") else "none",
+                reason,
+            )
+            return validate_decision(plan)
+        if plan and plan.get("intent") == "configuration_error":
+            return self._database_setup_or_mapping_error(str(plan.get("answer") or ""), reason=reason)
+        if not self._has_schema_metadata(request.semantic_catalog):
+            return self._database_setup_or_mapping_error(
+                "لم يتم تجهيز فهرس قاعدة البيانات بعد. شغّل schema-ingest أولًا أو تحقق من إعدادات MYSQL.",
+                reason=reason,
+            )
+        return self._database_setup_or_mapping_error(
+            "لا أستطيع تنفيذ هذا السؤال لأن خريطة قاعدة البيانات الحالية لا تحتوي على جدول أو حقول مناسبة لهذا الطلب.",
+            reason=reason,
+        )
+
+    def _database_setup_or_mapping_error(self, answer: str, *, reason: str):
+        log.info("agent_decision route=database_query intent=schema_not_ready selected_table=none operation=none reason=%s", reason)
+        return validate_decision(
+            FinalAnswerDecision(
+                type="final_answer",
+                route="database_query",
+                answer=answer,
+                display=Display(type="text", data={"error": "schema_not_ready_or_mapping_missing"}),
+                sources=[],
+                requires_database=True,
+                requires_context=True,
+            ).model_dump()
+        )
 
     async def _rag_decision(self, request: AgentDecideRequest, arabic: bool, route: str = "rag_search"):
         search = RagSearchRequest(query=request.message, user_context=request.user_context, top_k=self.settings.max_retrieved_chunks, filters=RagFilters())
@@ -150,6 +207,10 @@ class DecisionService:
                     sources=[],
                 ).model_dump()
             )
+        if self._looks_like_database_request(request.message):
+            fallback = self._database_request_fallback(request, request.message, prefer_arabic(request.message, request.locale), reason=exc.__class__.__name__)
+            if fallback is not None:
+                return fallback
         log.exception(
             "agent_decision %s intent=decision_pipeline_error",
             route_log_fields(
@@ -436,6 +497,22 @@ class DecisionService:
         if self._is_vague_follow_up(text):
             return True
         return False
+
+    @staticmethod
+    def _is_generic_unsupported(decision: object) -> bool:
+        return isinstance(decision, UnsupportedDecision) or (isinstance(decision, dict) and decision.get("type") == "unsupported")
+
+    @staticmethod
+    def _has_schema_metadata(catalog: dict) -> bool:
+        return bool(
+            isinstance(catalog, dict)
+            and (
+                isinstance(catalog.get("schema_snapshot"), dict)
+                or bool(catalog.get("tables"))
+                or bool(catalog.get("tables_index"))
+                or bool(catalog.get("domain_entities"))
+            )
+        )
 
     def _resolve_value_followup(self, request: AgentDecideRequest) -> dict | None:
         text = self._normalize(request.message)

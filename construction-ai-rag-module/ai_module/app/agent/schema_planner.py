@@ -8,6 +8,7 @@ class SchemaAwarePlanner:
     PROJECT_TERMS = ("مشروع", "مشاريع", "مشروعات", "project", "projects")
     CLIENT_TERMS = ("عميل", "عملاء", "العملاء", "client", "clients", "customer", "customers")
     USER_TERMS = ("مستخدم", "مستخدمين", "المستخدمين", "حساب", "حسابات", "account", "accounts", "users", "user", "system users")
+    ADMIN_TERMS = ("ادمن", "الأدمن", "الادمن", "مسؤول", "المسؤول", "المسؤولين", "مدير النظام", "مديري النظام", "admin", "admins", "administrator", "super admin", "owner")
     LIST_TERMS = ("اعرض", "عرض", "هات", "وريني", "اظهر", "show", "list", "display")
     NAME_TERMS = ("اسم", "اسماء", "الاسماء", "name", "names")
     COUNT_TERMS = ("كم", "عدد", "how many", "count", "total")
@@ -20,9 +21,15 @@ class SchemaAwarePlanner:
     ACTIVE_TERMS = ("نشط", "نشطه", "نشطة", "نشطين", "active")
     STOPPED_TERMS = ("متوقف", "متوقفه", "متوقفة", "stopped", "paused")
     FINISHED_TERMS = ("منتهي", "منتهيه", "منتهية", "completed", "delivered", "finished")
+    ADMIN_TABLE_CANDIDATES = ("admins", "users", "app_users", "organization_employees", "employees", "roles", "user_roles", "model_has_roles", "role_user")
+    ADMIN_FLAG_COLUMNS = ("is_admin", "is_super_admin", "admin", "owner", "is_owner", "super_admin")
+    ADMIN_ROLE_COLUMNS = ("role", "role_id", "type", "account_type", "user_type", "guard_name", "name")
+    ADMIN_DISPLAY_COLUMNS = ("name", "full_name", "username", "email", "role", "type", "account_type", "user_type", "is_admin", "is_super_admin", "admin", "created_at", "updated_at")
 
     def plan(self, message: str, catalog: dict[str, Any], max_rows: int) -> dict[str, Any] | None:
         text = ArabicNormalizer.normalize(message)
+        if self._is_admin_question(text):
+            return self._admin_plan(catalog, max_rows)
         if self._is_client_question(text):
             return self._client_plan(text, catalog, max_rows)
         if self._is_user_question(text):
@@ -94,6 +101,27 @@ class SchemaAwarePlanner:
             columns = [name_column] if name_column else []
             return self._tool_plan("list_users", "list", "users", columns=columns, limit=min(max_rows, 20), extra={"entities": ["users"], "fields": columns})
         return None
+
+    def _admin_plan(self, catalog: dict[str, Any], max_rows: int) -> dict[str, Any] | None:
+        table_name, table = self._first_existing_table(catalog, self.ADMIN_TABLE_CANDIDATES)
+        if not table_name or not table:
+            return None
+        columns = self._available_columns(table, self.ADMIN_DISPLAY_COLUMNS) or self._first_safe_columns(table, limit=6)
+        filters = self._admin_filters(table, table_name)
+        if not filters and table_name not in {"admins", "roles"}:
+            return self._configuration_error(
+                "لا أستطيع تحديد الأدمن لأن خريطة البيانات لا تحتوي على حقل دور أو صلاحية واضح.",
+                [f"{table_name}.role", f"{table_name}.type", f"{table_name}.is_admin"],
+            )
+        return self._tool_plan(
+            "find_admin_users",
+            "select",
+            table_name,
+            columns=columns,
+            filters=filters,
+            limit=min(max_rows, 20),
+            extra={"entities": ["admins", "users"], "fields": columns},
+        )
 
     def _count_plan(self, text: str, project: dict[str, Any], max_rows: int) -> dict[str, Any]:
         filters = []
@@ -190,6 +218,9 @@ class SchemaAwarePlanner:
     def _is_user_question(self, text: str) -> bool:
         return any(ArabicNormalizer.contains_term(text, term) for term in self.USER_TERMS)
 
+    def _is_admin_question(self, text: str) -> bool:
+        return any(ArabicNormalizer.contains_term(text, term) for term in self.ADMIN_TERMS)
+
     def _is_list(self, text: str) -> bool:
         return any(ArabicNormalizer.contains_term(text, term) for term in self.LIST_TERMS)
 
@@ -239,6 +270,13 @@ class SchemaAwarePlanner:
                 return table
         return None
 
+    def _first_existing_table(self, catalog: dict[str, Any], names: tuple[str, ...]) -> tuple[str | None, dict[str, Any] | None]:
+        for name in names:
+            table = self._table(catalog, name)
+            if table:
+                return name, table
+        return None, None
+
     @staticmethod
     def _first_column(table: dict[str, Any], names: tuple[str, ...]) -> str | None:
         raw_columns = table.get("columns", [])
@@ -252,6 +290,41 @@ class SchemaAwarePlanner:
             if name in columns:
                 return name
         return None
+
+    def _available_columns(self, table: dict[str, Any], names: tuple[str, ...]) -> list[str]:
+        return [name for name in names if self._first_column(table, (name,))]
+
+    def _first_safe_columns(self, table: dict[str, Any], *, limit: int) -> list[str]:
+        result: list[str] = []
+        for column in table.get("columns", []):
+            if isinstance(column, dict):
+                name = str(column.get("name") or "")
+                if column.get("sensitive") or column.get("is_sensitive"):
+                    continue
+            else:
+                name = str(column)
+            if name and name not in result:
+                result.append(name)
+            if len(result) >= limit:
+                break
+        return result
+
+    def _admin_filters(self, table: dict[str, Any], table_name: str) -> list[dict[str, Any]]:
+        if table_name == "admins":
+            return []
+        for column in self.ADMIN_FLAG_COLUMNS:
+            if self._first_column(table, (column,)):
+                return [{"column": column, "operator": "eq", "value": 1}]
+        for column in self.ADMIN_ROLE_COLUMNS:
+            if self._first_column(table, (column,)):
+                return [
+                    {
+                        "column": column,
+                        "operator": "in",
+                        "value": ["admin", "administrator", "super_admin", "super admin", "owner", 1],
+                    }
+                ]
+        return []
 
     @staticmethod
     def _report(project: dict[str, Any], name: str) -> dict[str, Any] | None:

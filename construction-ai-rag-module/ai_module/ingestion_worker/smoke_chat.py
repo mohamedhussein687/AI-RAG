@@ -14,6 +14,10 @@ def run_smoke_chat(message: str, *, source: str = "construction_mysql", settings
     response = asyncio.run(_chat(message, source=source, settings=settings))
     summary = response.get("executed_query_summary")
     print(f"route={response.get('route')}")
+    if "requires_database" in response:
+        print(f"requires_database={str(bool(response.get('requires_database'))).lower()}")
+    if "requires_context" in response:
+        print(f"requires_context={str(bool(response.get('requires_context'))).lower()}")
     print(f"answer={_short(response.get('answer'))}")
     if summary:
         print("executed_query_summary=" + json.dumps(summary, ensure_ascii=False, sort_keys=True))

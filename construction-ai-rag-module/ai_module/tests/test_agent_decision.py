@@ -99,6 +99,17 @@ def user_catalog():
     }
 
 
+def admin_catalog():
+    catalog = user_catalog()
+    catalog["tables"][0]["columns"].extend(
+        [
+            {"name": "is_admin", "type": "number", "operations": ["filter"], "enum_values": []},
+            {"name": "role", "type": "string", "operations": ["filter"], "enum_values": []},
+        ]
+    )
+    return catalog
+
+
 def project_catalog_with_cms_table():
     return {
         "catalog_version": 6,
@@ -407,7 +418,9 @@ def test_project_details_by_code_without_code_field_returns_structured_error(cli
     response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("تفاصيل مشروع بالكود C832-P2-06-2026", semantic_catalog=catalog))
     assert response.status_code == 200
     data = response.json()
-    assert data["type"] == "unsupported"
+    assert data["type"] == "final_answer"
+    assert data["route"] == "database_query"
+    assert data["requires_database"] is True
     assert "لا يوجد حقل كود" in data["answer"]
 
 
@@ -452,7 +465,9 @@ def test_delayed_projects_missing_mapping_returns_configuration_error(client, au
     response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("كم عدد المشاريع المتأخرة", semantic_catalog=catalog))
     assert response.status_code == 200
     data = response.json()
-    assert data["type"] == "unsupported"
+    assert data["type"] == "final_answer"
+    assert data["route"] == "database_query"
+    assert data["requires_database"] is True
     assert "حقول التأخير" in data["answer"]
 
 
@@ -653,7 +668,7 @@ def test_user_details_request_maps_to_canonical_users_table(client, auth_headers
     assert "type" in plan["columns"]
 
 
-def test_user_details_request_does_not_use_schema_fallback_when_qwen_says_unsupported(client, auth_headers, monkeypatch):
+def test_user_details_request_uses_schema_fallback_when_qwen_says_unsupported(client, auth_headers, monkeypatch):
     async def unsupported(self, messages):
         return {"type": "unsupported", "route": "unsupported", "answer": "لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."}
 
@@ -661,8 +676,60 @@ def test_user_details_request_does_not_use_schema_fallback_when_qwen_says_unsupp
     response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("اريد بيانات المستخدم Ayman Ibrahim El Sayed", semantic_catalog=user_catalog()))
     assert response.status_code == 200
     data = response.json()
-    assert data["type"] == "unsupported"
-    assert data["route"] == "unsupported"
+    assert data["type"] == "tool_calls"
+    assert data["route"] == "database_query"
+    assert data["requires_database"] is True
+    plan = data["tool_calls"][0]["plan"]
+    assert plan["table"] == "users"
+    assert plan["operation"] == "select"
+
+
+def test_admin_question_routes_database_query_when_qwen_says_unsupported(client, auth_headers, monkeypatch):
+    async def unsupported(self, messages):
+        return {"type": "unsupported", "route": "unsupported", "answer": "لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."}
+
+    monkeypatch.setattr(LlmClient, "chat_json", unsupported)
+    response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("من الادمن في هذا النظام", semantic_catalog=admin_catalog()))
+    assert response.status_code == 200
+    data = response.json()
+    assert data["type"] == "tool_calls"
+    assert data["route"] == "database_query"
+    assert data["requires_database"] is True
+    plan = data["tool_calls"][0]["plan"]
+    assert plan["intent"] == "find_admin_users"
+    assert plan["table"] == "users"
+    assert plan["operation"] == "select"
+    assert plan["filters"]
+    assert "name" in plan["columns"]
+
+
+def test_admin_synonyms_route_database_query(client, auth_headers, monkeypatch):
+    async def unsupported(self, messages):
+        return {"type": "unsupported", "route": "unsupported", "answer": "لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."}
+
+    monkeypatch.setattr(LlmClient, "chat_json", unsupported)
+    for message in ["مين الادمن", "اعرض الادمن", "من مدير النظام"]:
+        response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload(message, semantic_catalog=admin_catalog()))
+        assert response.status_code == 200
+        data = response.json()
+        assert data["route"] == "database_query"
+        assert data["requires_database"] is True
+        assert data["type"] == "tool_calls"
+
+
+def test_admin_question_schema_missing_returns_setup_error_not_unsupported(client, auth_headers, monkeypatch):
+    async def unsupported(self, messages):
+        return {"type": "unsupported", "route": "unsupported", "answer": "لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."}
+
+    monkeypatch.setattr(LlmClient, "chat_json", unsupported)
+    response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("من الادمن في هذا النظام", semantic_catalog={}))
+    assert response.status_code == 200
+    data = response.json()
+    assert data["type"] == "final_answer"
+    assert data["route"] == "database_query"
+    assert data["requires_database"] is True
+    assert data["requires_context"] is True
+    assert "لم يتم تجهيز فهرس قاعدة البيانات بعد" in data["answer"]
 
 
 def test_llm_user_table_alias_is_not_business_normalized_by_ai_module(client, auth_headers, monkeypatch):
@@ -959,8 +1026,9 @@ def test_service_failure_fallback_only_answers_obvious_conversation(client, auth
 
     database = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("اعرض جميع اسماء العملاء", semantic_catalog=client_catalog()))
     assert database.status_code == 200
-    assert database.json()["type"] == "unsupported"
-    assert database.json()["route"] == "unsupported"
+    assert database.json()["type"] == "tool_calls"
+    assert database.json()["route"] == "database_query"
+    assert database.json()["requires_database"] is True
 
 
 def test_no_raw_sql_can_appear_in_agent_decisions(client, auth_headers):
@@ -995,12 +1063,16 @@ def test_normal_inputs_never_return_500_when_planner_raises(client, auth_headers
         response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload(message, semantic_catalog=invoice_catalog()))
         assert response.status_code == 200
         data = response.json()
-        assert data["type"] == "unsupported"
-        assert data["route"] == "unsupported"
+        if "فاتورة" in message:
+            assert data["route"] == "database_query"
+            assert data["requires_database"] is True
+        else:
+            assert data["type"] == "unsupported"
+            assert data["route"] == "unsupported"
         assert "answer" in data
 
 
-def test_invalid_llm_output_returns_valid_json_unsupported(client, auth_headers, monkeypatch):
+def test_invalid_llm_output_returns_valid_json_database_setup_error_for_database_question(client, auth_headers, monkeypatch):
     async def invalid_chat_json(self, messages):
         return {"type": "tool_calls", "tool_calls": [{"id": "db_1", "tool": "database_query", "plan": {"operation": "drop", "table": "projects"}}]}
 
@@ -1008,5 +1080,6 @@ def test_invalid_llm_output_returns_valid_json_unsupported(client, auth_headers,
     response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("كم فاتورة موجودة؟", semantic_catalog=invoice_catalog()))
     assert response.status_code == 200
     data = response.json()
-    assert data["type"] == "unsupported"
-    assert data["route"] == "unsupported"
+    assert data["type"] == "final_answer"
+    assert data["route"] == "database_query"
+    assert data["requires_database"] is True

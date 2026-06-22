@@ -297,6 +297,9 @@ class DatabaseAwareChatResponse(StrictModel):
     display: Display = Field(default_factory=lambda: Display(type="text"))
     executed_query_summary: ExecutedQuerySummary | None = None
     sources: list[Source] = Field(default_factory=list)
+    requires_database: bool = False
+    requires_rag: bool = False
+    requires_context: bool = False
 
 
 class SchemaColumn(StrictModel):

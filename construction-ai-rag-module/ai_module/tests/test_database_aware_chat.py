@@ -22,7 +22,7 @@ def chat_payload(message: str, *, catalog: dict | None = None) -> dict:
             "permissions": ["live-data.read"],
         },
         "allowed_schema": {"tables": []},
-        "semantic_catalog": catalog or schema_catalog(),
+        "semantic_catalog": schema_catalog() if catalog is None else catalog,
         "external_tools": [{"name": "database_query"}],
         "local_tools": [],
         "rules": {"return_sql": False, "max_tool_calls": 1, "max_rows": 100, "joins_allowed": False},
@@ -263,6 +263,26 @@ def test_chat_forbidden_sensitive_request_does_not_open_database(client, auth_he
     assert data["executed_query_summary"] is None
     assert "حساسة" in data["answer"] or "كلمات المرور" in data["answer"]
     assert opened["database"] is False
+
+
+def test_chat_admin_question_schema_missing_is_database_setup_error(client, auth_headers, monkeypatch):
+    async def unsupported(self, messages):
+        return {"type": "unsupported", "route": "unsupported", "answer": "لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."}
+
+    @asynccontextmanager
+    async def should_not_open_database(_settings):
+        raise AssertionError("database should not be opened before schema is ready")
+
+    monkeypatch.setattr(LlmClient, "chat_json", unsupported)
+    monkeypatch.setattr("app.agent.database_chat_service.readonly_mysql_connection", should_not_open_database)
+    response = client.post("/api/chat", headers=auth_headers, json=chat_payload("من الادمن في هذا النظام", catalog={}))
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["route"] == "database_query"
+    assert data["requires_database"] is True
+    assert data["requires_context"] is True
+    assert "لم يتم تجهيز فهرس قاعدة البيانات بعد" in data["answer"]
 
 
 def test_smoke_chat_uses_private_module_chat(monkeypatch, capsys):

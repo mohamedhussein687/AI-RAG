@@ -29,6 +29,30 @@ aliases:
       - "employees"
       - "app_users"
 
+  admins:
+    arabic:
+      - "الادمن"
+      - "الأدمن"
+      - "المسؤول"
+      - "المسؤولين"
+      - "مدير النظام"
+      - "مديري النظام"
+    english:
+      - "admin"
+      - "admins"
+      - "administrator"
+      - "super admin"
+      - "owner"
+    physical_candidates:
+      - "users"
+      - "admins"
+      - "app_users"
+      - "organization_employees"
+      - "employees"
+      - "roles"
+      - "user_roles"
+      - "model_has_roles"
+
   projects:
     arabic:
       - "المشاريع"

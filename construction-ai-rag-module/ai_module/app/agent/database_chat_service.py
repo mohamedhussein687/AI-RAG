@@ -71,6 +71,9 @@ class DatabaseChatService:
             display=final.display,
             executed_query_summary=summary,
             sources=final.sources,
+            requires_database=decision.requires_database,
+            requires_rag=decision.requires_rag,
+            requires_context=decision.requires_context,
         )
 
     async def _execute_tool_call(self, raw_plan: dict[str, Any], snapshot: SchemaSnapshot, request: AgentDecideRequest) -> dict[str, Any]:
@@ -199,7 +202,15 @@ class DatabaseChatService:
         display = getattr(decision, "display", Display(type="text"))
         sources = getattr(decision, "sources", [])
         route = getattr(decision, "route", "unsupported")
-        return DatabaseAwareChatResponse(answer=answer, route=route, display=display, sources=sources)
+        return DatabaseAwareChatResponse(
+            answer=answer,
+            route=route,
+            display=display,
+            sources=sources,
+            requires_database=bool(getattr(decision, "requires_database", False)),
+            requires_rag=bool(getattr(decision, "requires_rag", False)),
+            requires_context=bool(getattr(decision, "requires_context", False)),
+        )
 
     @staticmethod
     def _summary_from_results(results: list[ToolResult]) -> ExecutedQuerySummary | None:

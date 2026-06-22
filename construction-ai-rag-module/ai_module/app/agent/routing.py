@@ -20,14 +20,17 @@ class MessageRouter:
     DATABASE_ACTIONS = (
         "اعرض", "عرض", "هات", "وريني", "اظهر", "ابحث", "دور", "فلتر", "صدر", "تصدير",
         "اريد", "عاوز", "بيانات", "معلومات", "تفاصيل",
+        "من", "مين",
         "كم", "عدد", "show", "list", "count", "search", "filter", "export",
-        "details", "detail", "info", "information", "data",
+        "details", "detail", "info", "information", "data", "who",
     )
     DATABASE_ENTITIES = (
         "عميل", "عملاء", "العملاء", "client", "clients", "customer", "customers",
         "مشروع", "مشاريع", "المشاريع", "project", "projects",
         "فاتوره", "فواتير", "invoice", "invoices",
         "مستخدم", "مستخدمين", "users", "user", "حساب", "حسابات", "account", "accounts",
+        "ادمن", "الادمن", "الأدمن", "مسؤول", "المسؤول", "المسؤولين", "مدير النظام", "مديري النظام",
+        "admin", "admins", "administrator", "super admin", "owner",
     )
     def route(self, message: str, has_database_catalog: bool = False) -> RouteDecision:
         text = ArabicNormalizer.normalize(message)
