@@ -641,6 +641,21 @@ def test_user_details_request_maps_to_canonical_users_table(client, auth_headers
     assert "type" in plan["columns"]
 
 
+def test_user_details_request_uses_schema_fallback_when_qwen_says_unsupported(client, auth_headers, monkeypatch):
+    async def unsupported(self, messages):
+        return {"type": "unsupported", "route": "unsupported", "answer": "لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."}
+
+    monkeypatch.setattr(LlmClient, "chat_json", unsupported)
+    response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("اريد بيانات المستخدم Ayman Ibrahim El Sayed", semantic_catalog=user_catalog()))
+    assert response.status_code == 200
+    data = response.json()
+    assert data["type"] == "tool_calls"
+    plan = data["tool_calls"][0]["plan"]
+    assert plan["operation"] == "select"
+    assert plan["table"] == "users"
+    assert {"column": "name", "operator": "contains", "value": "ayman ibrahim el sayed"} in plan["filters"]
+
+
 def test_llm_user_table_alias_is_normalized_to_users(client, auth_headers, monkeypatch):
     async def alias_plan(self, messages):
         return {

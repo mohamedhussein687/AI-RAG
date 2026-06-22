@@ -19,7 +19,9 @@ class MessageRouter:
     IDENTITY = ("انت مين", "مين انت", "ما اسمك", "اسمك ايه", "what are you", "who are you")
     DATABASE_ACTIONS = (
         "اعرض", "عرض", "هات", "وريني", "اظهر", "ابحث", "دور", "فلتر", "صدر", "تصدير",
+        "اريد", "عاوز", "بيانات", "معلومات", "تفاصيل",
         "كم", "عدد", "show", "list", "count", "search", "filter", "export",
+        "details", "detail", "info", "information", "data",
     )
     DATABASE_ENTITIES = (
         "عميل", "عملاء", "العملاء", "client", "clients", "customer", "customers",
