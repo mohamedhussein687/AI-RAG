@@ -91,6 +91,7 @@ def user_catalog():
                     {"name": "id", "type": "number", "operations": ["filter", "sort"], "enum_values": []},
                     {"name": "name", "type": "string", "operations": ["filter", "sort"], "enum_values": []},
                     {"name": "email", "type": "string", "operations": ["filter", "sort"], "enum_values": []},
+                    {"name": "type", "type": "number", "operations": ["filter", "group"], "enum_values": []},
                     {"name": "created_at", "type": "date", "operations": ["filter", "sort"], "enum_values": []},
                 ],
             }
@@ -646,6 +647,58 @@ def test_vague_follow_up_resolves_to_previous_database_intent(client, auth_heade
     assert plan["operation"] == "list"
     assert plan["table"] == "clients"
     assert plan["fields"] == ["name"]
+
+
+def test_value_meaning_follow_up_resolves_previous_tool_result_context(client, auth_headers, monkeypatch):
+    async def should_not_call_qwen(self, messages):
+        raise AssertionError("value follow-up should resolve before unsupported classification")
+
+    monkeypatch.setattr(LlmClient, "chat_json", should_not_call_qwen)
+    payload = decide_payload("ماذا يعني الحساب من النوع 2 ؟", semantic_catalog=user_catalog())
+    payload["tool_results"] = [
+        {
+            "operation": "select",
+            "intent": "list_users",
+            "table": "users",
+            "rows": [
+                {
+                    "name": "Basma Al Kholy",
+                    "type": 2,
+                }
+            ],
+        }
+    ]
+    response = client.post("/api/agent/decide", headers=auth_headers, json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["type"] == "final_answer"
+    assert data["route"] == "hybrid"
+    assert data["requires_database"] is True
+    assert data["requires_rag"] is True
+    assert data["requires_context"] is True
+    assert data["resolved_followup"] is True
+    assert data["followup_context"]["source_table"] == "users"
+    assert data["followup_context"]["source_field"] == "type"
+    assert data["followup_context"]["source_value"] == 2
+    assert data["followup_context"]["source_entity"] == "Basma Al Kholy"
+    assert data["route"] != "unsupported"
+    assert "لا يوجد في البيانات الحالية تعريف واضح" in data["answer"]
+
+
+def test_value_meaning_follow_up_uses_catalog_enum_mapping_when_available(client, auth_headers, monkeypatch):
+    async def should_not_call_qwen(self, messages):
+        raise AssertionError("value follow-up should resolve before unsupported classification")
+
+    monkeypatch.setattr(LlmClient, "chat_json", should_not_call_qwen)
+    catalog = user_catalog()
+    catalog["tables"][0]["columns"][3]["enum_values"] = [{"value": 2, "label": "حساب موظف"}]
+    payload = decide_payload("يعني ايه الحساب type 2؟", semantic_catalog=catalog)
+    payload["tool_results"] = [{"result": {"operation": "select", "table": "users", "rows": [{"name": "Basma Al Kholy", "type": 2}]}}]
+    response = client.post("/api/agent/decide", headers=auth_headers, json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["resolved_followup"] is True
+    assert "حساب موظف" in data["answer"]
 
 
 def test_llm_symbolic_filter_operator_is_normalized(client, auth_headers, monkeypatch):

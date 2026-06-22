@@ -107,6 +107,7 @@ class RagGatewayController {
     normalized.putIfAbsent("conversation_id", "laravel-" + client.clientName());
     normalized.putIfAbsent("locale", "ar");
     normalized.putIfAbsent("conversation_history", List.of());
+    normalized.putIfAbsent("tool_results", List.of());
     normalized.put("user_context", Map.of(
       "id", "api-key:" + client.clientName(),
       "tenant_id", client.clientName(),
@@ -142,6 +143,7 @@ class RagGatewayController {
     normalized.putIfAbsent("conversation_id", "public-chat");
     normalized.putIfAbsent("locale", "ar");
     normalized.putIfAbsent("conversation_history", List.of());
+    normalized.putIfAbsent("tool_results", List.of());
     normalized.putIfAbsent("allowed_schema", Map.of("tables", List.of()));
     normalized.putIfAbsent("external_tools", List.of());
     normalized.putIfAbsent("local_tools", List.of(Map.of("name", "knowledge_search")));

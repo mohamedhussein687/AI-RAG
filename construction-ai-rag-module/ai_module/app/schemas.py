@@ -125,6 +125,7 @@ class AgentDecideRequest(StrictModel):
     message: str = Field(min_length=1)
     locale: str = "ar"
     conversation_history: list[ConversationMessage] = Field(default_factory=list)
+    tool_results: list[dict[str, Any]] = Field(default_factory=list)
     user_context: UserContext
     allowed_schema: AllowedSchema = Field(default_factory=AllowedSchema)
     semantic_catalog: dict[str, Any] = Field(default_factory=dict)
@@ -141,6 +142,9 @@ class FinalAnswerDecision(StrictModel):
     route: DecisionRoute = "conversational"
     requires_database: bool = False
     requires_rag: bool = False
+    requires_context: bool = False
+    resolved_followup: bool = False
+    followup_context: dict[str, Any] = Field(default_factory=dict)
 
 
 class ClarificationDecision(StrictModel):
@@ -149,6 +153,9 @@ class ClarificationDecision(StrictModel):
     route: DecisionRoute = "clarification"
     requires_database: bool = False
     requires_rag: bool = False
+    requires_context: bool = False
+    resolved_followup: bool = False
+    followup_context: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolCallsDecision(StrictModel):
@@ -159,6 +166,9 @@ class ToolCallsDecision(StrictModel):
     route: DecisionRoute = "database_query"
     requires_database: bool = True
     requires_rag: bool = False
+    requires_context: bool = False
+    resolved_followup: bool = False
+    followup_context: dict[str, Any] = Field(default_factory=dict)
 
 
 class ForbiddenDecision(StrictModel):
@@ -175,6 +185,9 @@ class UnsupportedDecision(StrictModel):
     route: DecisionRoute = "unsupported"
     requires_database: bool = False
     requires_rag: bool = False
+    requires_context: bool = False
+    resolved_followup: bool = False
+    followup_context: dict[str, Any] = Field(default_factory=dict)
 
 
 AgentDecision = Annotated[FinalAnswerDecision | ClarificationDecision | ToolCallsDecision | ForbiddenDecision | UnsupportedDecision, Field(discriminator="type")]

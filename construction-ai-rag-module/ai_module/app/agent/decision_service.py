@@ -17,6 +17,7 @@ from app.schemas import RagSearchRequest, RagFilters
 from app.clients.llm_client import LlmClient
 import json
 import logging
+import re
 from pydantic import ValidationError
 
 SENSITIVE = ("password", "باسورد", "كلمة السر", "secret", "credential", "token")
@@ -48,6 +49,9 @@ class DecisionService:
         if any(term in text for term in SENSITIVE):
             log.info("agent_decision route=forbidden intent=sensitive_data selected_table=none operation=none normalized_message=%s reason=sensitive_term", self._normalize(request.message)[:300])
             return validate_decision(ForbiddenDecision(type="forbidden").model_dump())
+        resolved_value_followup = self._resolve_value_followup(request)
+        if resolved_value_followup:
+            return self._followup_value_decision(request, resolved_value_followup, arabic)
         route = self.router.route(request.message, self._has_database_catalog(request))
         if route.route == "conversational":
             log.info(
@@ -387,6 +391,167 @@ class DecisionService:
         if self._is_vague_follow_up(text):
             return True
         return False
+
+    def _resolve_value_followup(self, request: AgentDecideRequest) -> dict | None:
+        text = self._normalize(request.message)
+        if not self._looks_like_value_meaning_question(text):
+            return None
+        rows_context = self._previous_result_rows(request)
+        if not rows_context:
+            return None
+        value = self._referenced_value(request.message)
+        field_hint = self._referenced_field(text)
+        for result in rows_context:
+            table = str(result.get("table") or "").strip()
+            if not table:
+                continue
+            for row in result.get("rows") or []:
+                if not isinstance(row, dict):
+                    continue
+                matched_field, matched_value = self._match_row_field_value(row, field_hint, value)
+                if matched_field is None:
+                    continue
+                entity = self._row_entity_label(row)
+                context = {
+                    "source_table": table,
+                    "source_field": matched_field,
+                    "source_value": matched_value,
+                    "source_entity": entity,
+                }
+                log.info(
+                    "agent_decision route=hybrid intent=value_followup_resolution selected_table=%s operation=meaning_lookup source_field=%s normalized_message=%s",
+                    table,
+                    matched_field,
+                    text[:300],
+                )
+                return context
+        return None
+
+    def _followup_value_decision(self, request: AgentDecideRequest, context: dict, arabic: bool):
+        meaning = self._known_value_meaning(request.semantic_catalog, context["source_table"], context["source_field"], context["source_value"])
+        if meaning:
+            answer = (
+                f"القيمة {context['source_field']}={context['source_value']} الخاصة بـ {context['source_entity']} تعني: {meaning}."
+                if arabic
+                else f"The value {context['source_field']}={context['source_value']} for {context['source_entity']} means: {meaning}."
+            )
+        else:
+            answer = (
+                f"القيمة {context['source_field']}={context['source_value']} موجودة في جدول {context['source_table']}"
+                f" للكيان {context['source_entity']}، لكن لا يوجد في البيانات الحالية تعريف واضح لمعنى هذا النوع. "
+                "نحتاج جدول مرجعي أو mapping يوضح أنواع الحسابات."
+                if arabic
+                else (
+                    f"The value {context['source_field']}={context['source_value']} exists in table {context['source_table']} "
+                    f"for {context['source_entity']}, but the current data does not include a clear mapping for this value."
+                )
+            )
+        return validate_decision(
+            FinalAnswerDecision(
+                type="final_answer",
+                route="hybrid",
+                answer=answer,
+                display=Display(type="text", data={"followup_context": context}),
+                sources=[],
+                requires_database=True,
+                requires_rag=True,
+                requires_context=True,
+                resolved_followup=True,
+                followup_context=context,
+            ).model_dump()
+        )
+
+    def _looks_like_value_meaning_question(self, text: str) -> bool:
+        meaning_terms = ("يعني", "معني", "معنى", "اشرح", "تفسير", "meaning", "what does", "ده معناه", "معناه ايه")
+        value_terms = ("نوع", "type", "الحاله", "الحالة", "status", "الرقم", "number", "value", "القيمه", "القيمة")
+        return any(term in text for term in meaning_terms) and any(term in text for term in value_terms)
+
+    def _previous_result_rows(self, request: AgentDecideRequest) -> list[dict]:
+        results: list[dict] = []
+        for item in request.tool_results:
+            if not isinstance(item, dict):
+                continue
+            result = item.get("result") if isinstance(item.get("result"), dict) else item
+            rows = result.get("rows") if isinstance(result, dict) else None
+            if isinstance(rows, list):
+                results.append(result)
+        return results
+
+    def _referenced_field(self, text: str) -> str | None:
+        if any(term in text for term in ("نوع الحساب", "النوع", "نوع", "type")):
+            return "type"
+        if any(term in text for term in ("الحاله", "الحالة", "status")):
+            return "status"
+        return None
+
+    def _referenced_value(self, message: str) -> str | int | float | None:
+        match = re.search(r"(?<![\w.-])([0-9]+(?:\.[0-9]+)?)(?![\w.-])", message)
+        if not match:
+            return None
+        raw = match.group(1)
+        if "." in raw:
+            return float(raw)
+        return int(raw)
+
+    def _match_row_field_value(self, row: dict, field_hint: str | None, value: str | int | float | None) -> tuple[str | None, object | None]:
+        if field_hint and field_hint in row:
+            row_value = row.get(field_hint)
+            if value is None or self._same_value(row_value, value):
+                return field_hint, row_value
+        if value is not None:
+            candidates = []
+            for field, row_value in row.items():
+                if str(field).lower() in {"id", "created_at", "updated_at", "deleted_at"}:
+                    continue
+                if self._same_value(row_value, value):
+                    candidates.append((str(field), row_value))
+            if len(candidates) == 1:
+                return candidates[0]
+            if field_hint:
+                for field, row_value in candidates:
+                    if field == field_hint:
+                        return field, row_value
+        if field_hint:
+            return None, None
+        numeric = [
+            (str(field), row_value)
+            for field, row_value in row.items()
+            if str(field).lower() not in {"id", "created_at", "updated_at", "deleted_at"} and isinstance(row_value, int | float)
+        ]
+        if len(numeric) == 1:
+            return numeric[0]
+        return None, None
+
+    @staticmethod
+    def _same_value(left: object, right: object) -> bool:
+        return str(left).strip().lower() == str(right).strip().lower()
+
+    @staticmethod
+    def _row_entity_label(row: dict) -> str:
+        for field in ("name", "full_name", "title", "username", "email", "code", "project_code"):
+            value = row.get(field)
+            if value not in (None, ""):
+                return str(value)
+        return "السجل السابق"
+
+    @staticmethod
+    def _known_value_meaning(catalog: dict, table: str, field: str, value: object) -> str | None:
+        for table_item in catalog.get("tables", []):
+            if table_item.get("name") != table:
+                continue
+            for column in table_item.get("columns", []):
+                if not isinstance(column, dict) or column.get("name") != field:
+                    continue
+                enum_values = column.get("enum_values") or []
+                for enum_item in enum_values:
+                    if isinstance(enum_item, dict) and str(enum_item.get("value")).strip().lower() == str(value).strip().lower():
+                        label = enum_item.get("label") or enum_item.get("name") or enum_item.get("meaning")
+                        return str(label) if label else None
+                    if isinstance(enum_item, str) and ":" in enum_item:
+                        raw_value, label = enum_item.split(":", 1)
+                        if raw_value.strip().lower() == str(value).strip().lower():
+                            return label.strip()
+        return None
 
     def _normalize(self, value: str) -> str:
         return ArabicNormalizer.normalize(value)

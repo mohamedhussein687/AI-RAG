@@ -275,13 +275,15 @@ class GatewayAuthenticationTest {
 
       controller.chat(Map.of(
         "message", "اريد عرضهم جميعا",
-        "conversation_history", List.of(Map.of("role", "user", "content", "اعرض جميع اسماء العملاء"))
+        "conversation_history", List.of(Map.of("role", "user", "content", "اعرض جميع اسماء العملاء")),
+        "tool_results", List.of(Map.of("operation", "select", "table", "clients", "rows", List.of(Map.of("name", "Client A"))))
       ), exchange).block();
       RecordedRequest decide = ai.takeRequest(2, TimeUnit.SECONDS);
 
       JsonNode decideBody = JSON.readTree(decide.getBody().readUtf8());
       assertThat(decideBody.get("message").asText()).isEqualTo("اريد عرضهم جميعا");
       assertThat(decideBody.get("conversation_history").get(0).get("content").asText()).isEqualTo("اعرض جميع اسماء العملاء");
+      assertThat(decideBody.get("tool_results").get(0).get("table").asText()).isEqualTo("clients");
       Mockito.verify(db).execute(Mockito.any(), Mockito.argThat(call -> "clients".equals(((Map<?, ?>) call.get("plan")).get("table"))));
     }
   }
