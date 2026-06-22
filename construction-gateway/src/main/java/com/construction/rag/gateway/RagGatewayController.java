@@ -163,7 +163,7 @@ class RagGatewayController {
     if (!"database_query".equals(String.valueOf(toolCall.get("tool")))) throw new IllegalArgumentException("AI requested a non-allowlisted tool");
     return databaseQueries.execute(client, toolCall)
       .map(result -> (Object) arabicFormatter.answer(String.valueOf(normalized.get("message")), toolCall, result))
-      .onErrorResume(IllegalArgumentException.class, ignored -> localApiKeyDecision(client, normalized, catalog));
+      .onErrorResume(ignored -> localApiKeyDecision(client, normalized, catalog));
   }
 
   private Mono<Object> localApiKeyDecision(RagClient client, Map<String, Object> normalized, SemanticCatalog catalog) {

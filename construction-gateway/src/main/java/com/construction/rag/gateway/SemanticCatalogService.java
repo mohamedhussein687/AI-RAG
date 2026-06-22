@@ -25,6 +25,7 @@ import org.springframework.stereotype.Component;
 class SemanticCatalogService {
   private static final int MAX_TABLES_IN_PROMPT = 40;
   private static final int MAX_COLUMNS_IN_PROMPT = 40;
+  private static final int CATALOG_VERSION = 2;
   private static final Set<String> SENSITIVE_TOKENS = Set.of(
     "password", "passwd", "remember_token", "api_token", "token", "secret", "private_key",
     "reset_token", "key", "credential", "authorization"
@@ -113,10 +114,10 @@ class SemanticCatalogService {
   private SemanticCatalog load(RagClient client, String schemaHash) {
     return jdbc.query("""
         select catalog_json::text from rag_client_catalogs
-        where client_name = ? and schema_hash = ? and enabled = true
+        where client_name = ? and schema_hash = ? and catalog_version = ? and enabled = true
         """,
       (rs, rowNum) -> fromJson(rs.getString(1)),
-      client.clientName(), schemaHash
+      client.clientName(), schemaHash, CATALOG_VERSION
     ).stream().findFirst().orElse(null);
   }
 
@@ -233,7 +234,7 @@ class SemanticCatalogService {
       throw new IllegalStateException("failed to discover client schema", ex);
     }
     tables.sort(Comparator.comparing(CatalogTable::logicalName));
-    return new SemanticCatalog(client.clientName(), 1, Instant.now().toString(), schemaHash, true, tables);
+    return new SemanticCatalog(client.clientName(), CATALOG_VERSION, Instant.now().toString(), schemaHash, true, tables);
   }
 
   private static boolean sensitive(String name) {
