@@ -89,13 +89,13 @@ class RagGatewayController {
   }
 
   @GetMapping("/internal/admin/schema")
-  Map<String, Object> adminSchema(@RequestParam(defaultValue = "orbit") String client, ServerWebExchange exchange) {
+  Map<String, Object> adminSchema(@RequestParam(name = "client", defaultValue = "orbit") String client, ServerWebExchange exchange) {
     requireAdmin(identity(exchange));
     return catalogs.adminSchema(clientByName(client));
   }
 
   @PostMapping("/internal/admin/schema/refresh")
-  Map<String, Object> refreshAdminSchema(@RequestParam(defaultValue = "orbit") String client, ServerWebExchange exchange) {
+  Map<String, Object> refreshAdminSchema(@RequestParam(name = "client", defaultValue = "orbit") String client, ServerWebExchange exchange) {
     requireAdmin(identity(exchange));
     return catalogs.refreshAdminSchema(clientByName(client));
   }
