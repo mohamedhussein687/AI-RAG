@@ -709,7 +709,7 @@ def test_llm_textual_filter_operator_is_normalized_for_user_details(client, auth
     data = response.json()
     plan = data["tool_calls"][0]["plan"]
     assert plan["table"] == "users"
-    assert plan["filters"] == [{"column": "name", "operator": "eq", "value": "Ayman Ibrahim El Sayed"}]
+    assert plan["filters"] == [{"column": "name", "operator": "contains", "value": "Ayman Ibrahim El Sayed"}]
 
 
 def test_vague_follow_up_resolves_to_previous_database_intent(client, auth_headers, monkeypatch):

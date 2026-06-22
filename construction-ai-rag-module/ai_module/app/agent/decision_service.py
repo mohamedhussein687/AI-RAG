@@ -331,6 +331,19 @@ class DecisionService:
                     plan["intent"] = "user_details"
                 else:
                     plan.setdefault("intent", "list_users")
+                if plan.get("intent") == "user_details":
+                    self._normalize_user_detail_filters(plan)
+
+    @staticmethod
+    def _normalize_user_detail_filters(plan: dict) -> None:
+        filters = plan.get("filters")
+        if not isinstance(filters, list):
+            return
+        for item in filters:
+            if not isinstance(item, dict):
+                continue
+            if item.get("column") == "name" and item.get("operator") == "eq":
+                item["operator"] = "contains"
 
     def _canonical_table(self, value: str) -> str:
         normalized = self._normalize(value)
