@@ -56,7 +56,9 @@ class DecisionService:
         return validate_decision(ClarificationDecision(type="clarification", question=question).model_dump())
 
     def _has_database_catalog(self, request: AgentDecideRequest) -> bool:
-        return any(t.name == "database_query" for t in request.external_tools) and bool(request.semantic_catalog.get("tables"))
+        return any(t.name == "database_query" for t in request.external_tools) and (
+            bool(request.semantic_catalog.get("tables")) or bool(request.semantic_catalog.get("tables_index"))
+        )
 
     async def _qwen_database_decision(self, request: AgentDecideRequest, arabic: bool):
         messages = [
