@@ -164,7 +164,7 @@ class GatewayAuthenticationTest {
       SemanticCatalog catalog = catalog();
       Mockito.when(catalogs.catalog(Mockito.any())).thenReturn(catalog);
       Mockito.when(catalogs.allowedSchema(catalog)).thenReturn(Map.of("tables", List.of(Map.of("name", "projects", "columns", List.of("status"), "allowed_operations", List.of("count")))));
-      Mockito.when(catalogs.promptSummary(catalog)).thenReturn(Map.of("tables", List.of()));
+      Mockito.when(catalogs.promptSummary(Mockito.eq(catalog), Mockito.anyString())).thenReturn(Map.of("tables_index", List.of(Map.of("name", "projects")), "tables", List.of()));
       RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props), db, catalogs, new ArabicDatabaseAnswerFormatter());
       ServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/api/chat").header("X-API-Key", "redacted").build());
       exchange.getAttributes().put(ApiKeyClientFilter.RAG_CLIENT_ATTR, new RagClient(7, "orbit", "mysql", "db", 3306, "orbit", "user", "encrypted", "active"));

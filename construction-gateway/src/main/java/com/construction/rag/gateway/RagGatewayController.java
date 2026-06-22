@@ -101,7 +101,7 @@ class RagGatewayController {
       "permissions", List.of("live-data.read")
     ));
     normalized.put("allowed_schema", catalogs.allowedSchema(catalog));
-    normalized.put("semantic_catalog", catalogs.promptSummary(catalog));
+    normalized.put("semantic_catalog", catalogs.promptSummary(catalog, message));
     normalized.put("external_tools", List.of(Map.of("name", "database_query")));
     normalized.put("local_tools", List.of());
     normalized.put("rules", Map.of("return_sql", false, "max_tool_calls", 1, "max_rows", 20, "joins_allowed", false));

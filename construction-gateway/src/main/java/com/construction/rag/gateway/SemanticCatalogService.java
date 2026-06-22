@@ -58,10 +58,15 @@ class SemanticCatalogService {
     return generated;
   }
 
-  Map<String, Object> promptSummary(SemanticCatalog catalog) {
+  Map<String, Object> promptSummary(SemanticCatalog catalog, String question) {
+    List<CatalogTable> candidates = catalog.tables().stream()
+      .filter(CatalogTable::enabled)
+      .sorted(Comparator.comparingInt((CatalogTable table) -> candidateScore(question, table)).reversed().thenComparing(CatalogTable::logicalName))
+      .limit(MAX_DETAILED_TABLES_IN_PROMPT)
+      .toList();
     List<Map<String, Object>> tableIndex = new ArrayList<>();
     List<Map<String, Object>> tables = new ArrayList<>();
-    for (CatalogTable table : catalog.tables()) {
+    for (CatalogTable table : candidates) {
       if (!table.enabled()) continue;
       tableIndex.add(Map.of(
         "name", table.logicalName(),
@@ -69,7 +74,6 @@ class SemanticCatalogService {
         "entity_en", table.englishSynonyms(),
         "allowed_operations", table.allowedOperations()
       ));
-      if (tables.size() >= MAX_DETAILED_TABLES_IN_PROMPT) continue;
       List<Map<String, Object>> columns = new ArrayList<>();
       for (CatalogColumn column : table.columns()) {
         if (!column.enabled()) continue;
@@ -90,6 +94,33 @@ class SemanticCatalogService {
       ));
     }
     return Map.of("catalog_version", catalog.version(), "schema_hash", catalog.schemaHash(), "tables_index", tableIndex, "tables", tables);
+  }
+
+  private int candidateScore(String question, CatalogTable table) {
+    String normalizedQuestion = normalize(question);
+    int score = 0;
+    for (String label : labels(table)) {
+      String normalizedLabel = normalize(label);
+      if (normalizedLabel.isBlank()) continue;
+      if (normalizedQuestion.contains(normalizedLabel)) score += 10 + normalizedLabel.length();
+      for (String token : normalizedLabel.split("\\s+|_")) {
+        if (token.length() >= 3 && normalizedQuestion.contains(token)) score += 3;
+      }
+    }
+    return score;
+  }
+
+  private List<String> labels(CatalogTable table) {
+    List<String> labels = new ArrayList<>();
+    labels.add(table.logicalName());
+    labels.add(table.entityName());
+    labels.addAll(table.arabicSynonyms());
+    labels.addAll(table.englishSynonyms());
+    return labels;
+  }
+
+  private String normalize(String value) {
+    return value == null ? "" : value.toLowerCase(Locale.ROOT).replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا').replace('ة', 'ه').replaceAll("[^\\p{IsAlphabetic}\\p{IsDigit}_ ]", " ").trim();
   }
 
   Map<String, Object> allowedSchema(SemanticCatalog catalog) {
