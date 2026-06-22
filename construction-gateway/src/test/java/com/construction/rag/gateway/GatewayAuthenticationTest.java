@@ -154,6 +154,9 @@ class GatewayAuthenticationTest {
   void apiKeyChatExecutesStructuredDatabasePlanAndFinalizesAnswer() throws Exception {
     try (MockWebServer ai = new MockWebServer()) {
       ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("""
+        {"client_name":"orbit","schema_hash":"hash","tables_indexed":1,"chunks_indexed":1}
+        """));
+      ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("""
         {"type":"tool_calls","tool_calls":[{"id":"db_1","tool":"database_query","plan":{"operation":"count","table":"projects","filters":[{"column":"status","operator":"eq","value":"waiting"}],"limit":100}}],"local_rag_results":[],"final_answer_instruction":"Answer in Arabic."}
         """));
       ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("""
@@ -166,21 +169,24 @@ class GatewayAuthenticationTest {
       SemanticCatalogService catalogs = Mockito.mock(SemanticCatalogService.class);
       SemanticCatalog catalog = catalog();
       Mockito.when(catalogs.catalog(Mockito.any())).thenReturn(catalog);
-      Mockito.when(catalogs.allowedSchema(catalog)).thenReturn(Map.of("tables", List.of(Map.of("name", "projects", "columns", List.of("status"), "allowed_operations", List.of("count")))));
-      Mockito.when(catalogs.promptSummary(catalog)).thenReturn(Map.of("tables_index", List.of(Map.of("name", "projects")), "tables", List.of()));
+      Mockito.when(catalogs.adminSchema(Mockito.any())).thenReturn(adminSchema());
       RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props), db, catalogs, null);
       ServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/api/chat").header("X-API-Key", "redacted").build());
       exchange.getAttributes().put(ApiKeyClientFilter.RAG_CLIENT_ATTR, new RagClient(7, "orbit", "mysql", "db", 3306, "orbit", "user", "encrypted", "active"));
 
       Object response = controller.chat(Map.of("message", "كم مشروع waiting؟"), exchange).block();
+      RecordedRequest ingest = ai.takeRequest(2, TimeUnit.SECONDS);
       RecordedRequest decide = ai.takeRequest(2, TimeUnit.SECONDS);
       RecordedRequest finalAnswer = ai.takeRequest(2, TimeUnit.SECONDS);
 
       assertThat(response).isInstanceOf(Map.class);
+      assertThat(ingest).isNotNull();
+      assertThat(ingest.getPath()).isEqualTo("/api/schema/ingest");
       assertThat(decide).isNotNull();
       assertThat(decide.getPath()).isEqualTo("/api/agent/decide");
       JsonNode decideBody = JSON.readTree(decide.getBody().readUtf8());
-      assertThat(decideBody.get("semantic_catalog")).isNotNull();
+      assertThat(decideBody.get("semantic_catalog").get("client_name").asText()).isEqualTo("orbit");
+      assertThat(decideBody.get("semantic_catalog").has("tables")).isFalse();
       assertThat(decideBody.get("external_tools").get(0).get("name").asText()).isEqualTo("database_query");
       assertThat(finalAnswer).isNotNull();
       assertThat(finalAnswer.getPath()).isEqualTo("/api/agent/final");
@@ -197,6 +203,9 @@ class GatewayAuthenticationTest {
   void apiKeyIdentityQuestionIsHandledByAiNotSpringOrDatabase() throws Exception {
     try (MockWebServer ai = new MockWebServer()) {
       ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("""
+        {"client_name":"orbit","schema_hash":"hash","tables_indexed":1,"chunks_indexed":1}
+        """));
+      ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("""
         {"type":"final_answer","answer":"أنا مساعد ORBIT AI، شغال على مشروع ORBIT، وأقدر أساعدك في قراءة وتحليل بيانات المشروع حسب الصلاحيات المتاحة.","display":{"type":"text","data":{}},"sources":[]}
         """));
       ai.start(InetAddress.getByName("127.0.0.1"), 0);
@@ -204,16 +213,17 @@ class GatewayAuthenticationTest {
     SemanticCatalogService catalogs = Mockito.mock(SemanticCatalogService.class);
       SemanticCatalog catalog = catalog();
       Mockito.when(catalogs.catalog(Mockito.any())).thenReturn(catalog);
-      Mockito.when(catalogs.allowedSchema(catalog)).thenReturn(Map.of("tables", List.of()));
-      Mockito.when(catalogs.promptSummary(catalog)).thenReturn(Map.of("tables_index", List.of(Map.of("name", "projects")), "tables", List.of()));
+      Mockito.when(catalogs.adminSchema(Mockito.any())).thenReturn(adminSchema());
       RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props(ai.url("/").toString(), "internal-ai-token")), db, catalogs, null);
     ServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/api/chat").header("X-API-Key", "redacted").build());
     exchange.getAttributes().put(ApiKeyClientFilter.RAG_CLIENT_ATTR, new RagClient(7, "orbit", "mysql", "db", 3306, "orbit", "user", "encrypted", "active"));
 
     Object response = controller.chat(Map.of("message", "انت مين؟"), exchange).block();
+      RecordedRequest ingest = ai.takeRequest(2, TimeUnit.SECONDS);
       RecordedRequest decide = ai.takeRequest(2, TimeUnit.SECONDS);
 
     assertThat(((Map<?, ?>) response).get("answer")).isEqualTo("أنا مساعد ORBIT AI، شغال على مشروع ORBIT، وأقدر أساعدك في قراءة وتحليل بيانات المشروع حسب الصلاحيات المتاحة.");
+      assertThat(ingest.getPath()).isEqualTo("/api/schema/ingest");
       assertThat(decide).isNotNull();
       assertThat(decide.getPath()).isEqualTo("/api/agent/decide");
       Mockito.verifyNoInteractions(db);
@@ -223,6 +233,9 @@ class GatewayAuthenticationTest {
   @Test
   void apiKeyClientListRequestMustRemainDatabaseQuery() throws Exception {
     try (MockWebServer ai = new MockWebServer()) {
+      ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("""
+        {"client_name":"orbit","schema_hash":"hash","tables_indexed":1,"chunks_indexed":1}
+        """));
       ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("""
         {"type":"tool_calls","route":"database_query","requires_database":true,"requires_rag":false,"tool_calls":[{"id":"db_1","tool":"database_query","plan":{"intent":"list_clients","entities":["clients"],"operation":"list","table":"clients","columns":["name"],"fields":["name"],"filters":[],"limit":20}}],"local_rag_results":[],"final_answer_instruction":"Answer in Arabic."}
         """));
@@ -235,13 +248,13 @@ class GatewayAuthenticationTest {
       SemanticCatalogService catalogs = Mockito.mock(SemanticCatalogService.class);
       SemanticCatalog catalog = catalog();
       Mockito.when(catalogs.catalog(Mockito.any())).thenReturn(catalog);
-      Mockito.when(catalogs.allowedSchema(catalog)).thenReturn(Map.of("tables", List.of(Map.of("name", "clients", "columns", List.of("name"), "allowed_operations", List.of("list")))));
-      Mockito.when(catalogs.promptSummary(catalog)).thenReturn(Map.of("tables_index", List.of(Map.of("name", "clients")), "tables", List.of(Map.of("name", "clients", "columns", List.of(Map.of("name", "name"))))));
+      Mockito.when(catalogs.adminSchema(Mockito.any())).thenReturn(adminSchema());
       RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props(ai.url("/").toString(), "internal-ai-token")), db, catalogs, null);
       ServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/api/chat").header("X-API-Key", "redacted").build());
       exchange.getAttributes().put(ApiKeyClientFilter.RAG_CLIENT_ATTR, new RagClient(7, "orbit", "mysql", "db", 3306, "orbit", "user", "encrypted", "active"));
 
       Object response = controller.chat(Map.of("message", "اعرض جميع اسماء العملاء"), exchange).block();
+      ai.takeRequest(2, TimeUnit.SECONDS);
       RecordedRequest decide = ai.takeRequest(2, TimeUnit.SECONDS);
 
       assertThat(((Map<?, ?>) response).get("answer")).isEqualTo("هؤلاء هم العملاء المتاحون.");
@@ -256,6 +269,9 @@ class GatewayAuthenticationTest {
   void apiKeyFollowUpPassesConversationHistoryToAiModule() throws Exception {
     try (MockWebServer ai = new MockWebServer()) {
       ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("""
+        {"client_name":"orbit","schema_hash":"hash","tables_indexed":1,"chunks_indexed":1}
+        """));
+      ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("""
         {"type":"tool_calls","route":"database_query","requires_database":true,"requires_rag":false,"tool_calls":[{"id":"db_1","tool":"database_query","plan":{"intent":"list_clients","entities":["clients"],"operation":"list","table":"clients","columns":["name"],"fields":["name"],"filters":[],"limit":20}}],"local_rag_results":[],"final_answer_instruction":"Answer in Arabic."}
         """));
       ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("""
@@ -267,8 +283,7 @@ class GatewayAuthenticationTest {
       SemanticCatalogService catalogs = Mockito.mock(SemanticCatalogService.class);
       SemanticCatalog catalog = catalog();
       Mockito.when(catalogs.catalog(Mockito.any())).thenReturn(catalog);
-      Mockito.when(catalogs.allowedSchema(catalog)).thenReturn(Map.of("tables", List.of(Map.of("name", "clients", "columns", List.of("name"), "allowed_operations", List.of("list")))));
-      Mockito.when(catalogs.promptSummary(catalog)).thenReturn(Map.of("tables_index", List.of(Map.of("name", "clients")), "tables", List.of(Map.of("name", "clients", "columns", List.of(Map.of("name", "name"))))));
+      Mockito.when(catalogs.adminSchema(Mockito.any())).thenReturn(adminSchema());
       RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props(ai.url("/").toString(), "internal-ai-token")), db, catalogs, null);
       ServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/api/chat").header("X-API-Key", "redacted").build());
       exchange.getAttributes().put(ApiKeyClientFilter.RAG_CLIENT_ATTR, new RagClient(7, "orbit", "mysql", "db", 3306, "orbit", "user", "encrypted", "active"));
@@ -278,6 +293,7 @@ class GatewayAuthenticationTest {
         "conversation_history", List.of(Map.of("role", "user", "content", "اعرض جميع اسماء العملاء")),
         "tool_results", List.of(Map.of("operation", "select", "table", "clients", "rows", List.of(Map.of("name", "Client A"))))
       ), exchange).block();
+      ai.takeRequest(2, TimeUnit.SECONDS);
       RecordedRequest decide = ai.takeRequest(2, TimeUnit.SECONDS);
 
       JsonNode decideBody = JSON.readTree(decide.getBody().readUtf8());
@@ -285,6 +301,40 @@ class GatewayAuthenticationTest {
       assertThat(decideBody.get("conversation_history").get(0).get("content").asText()).isEqualTo("اعرض جميع اسماء العملاء");
       assertThat(decideBody.get("tool_results").get(0).get("table").asText()).isEqualTo("clients");
       Mockito.verify(db).execute(Mockito.any(), Mockito.argThat(call -> "clients".equals(((Map<?, ?>) call.get("plan")).get("table"))));
+    }
+  }
+
+  @Test
+  void apiKeyValidationErrorIsReturnedToAiForFinalAnswer() throws Exception {
+    try (MockWebServer ai = new MockWebServer()) {
+      ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("""
+        {"client_name":"orbit","schema_hash":"hash","tables_indexed":1,"chunks_indexed":1}
+        """));
+      ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("""
+        {"type":"tool_calls","route":"database_query","requires_database":true,"tool_calls":[{"id":"db_1","tool":"database_query","plan":{"operation":"select","table":"unknown_table","columns":["name"],"filters":[],"limit":20}}],"local_rag_results":[],"final_answer_instruction":"Answer in Arabic."}
+        """));
+      ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("""
+        {"answer":"لا أستطيع تنفيذ هذا الاستعلام لأن الجدول غير موجود أو غير مسموح لهذا المشروع.","display":{"type":"metric","data":{"tool_results":[{"operation":"validation_error"}],"citations_valid":true}},"sources":[]}
+        """));
+      ai.start(InetAddress.getByName("127.0.0.1"), 0);
+      SafeDatabaseQueryService db = Mockito.mock(SafeDatabaseQueryService.class);
+      Mockito.when(db.execute(Mockito.any(), Mockito.any())).thenReturn(Mono.error(new IllegalArgumentException("table is not allowlisted: requested_table=unknown_table, normalized_table=unknown_table, allowed_tables=[users]")));
+      SemanticCatalogService catalogs = Mockito.mock(SemanticCatalogService.class);
+      Mockito.when(catalogs.catalog(Mockito.any())).thenReturn(catalog());
+      Mockito.when(catalogs.adminSchema(Mockito.any())).thenReturn(adminSchema());
+      RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props(ai.url("/").toString(), "internal-ai-token")), db, catalogs, null);
+      ServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/api/chat").header("X-API-Key", "redacted").build());
+      exchange.getAttributes().put(ApiKeyClientFilter.RAG_CLIENT_ATTR, new RagClient(7, "orbit", "mysql", "db", 3306, "orbit", "user", "encrypted", "active"));
+
+      Object response = controller.chat(Map.of("message", "اعرض جدول غير معروف"), exchange).block();
+      ai.takeRequest(2, TimeUnit.SECONDS);
+      ai.takeRequest(2, TimeUnit.SECONDS);
+      RecordedRequest finalAnswer = ai.takeRequest(2, TimeUnit.SECONDS);
+
+      assertThat(((Map<?, ?>) response).get("answer")).asString().contains("لا أستطيع تنفيذ");
+      JsonNode finalBody = JSON.readTree(finalAnswer.getBody().readUtf8());
+      assertThat(finalBody.get("tool_results").get(0).get("result").get("operation").asText()).isEqualTo("validation_error");
+      assertThat(finalBody.get("tool_results").get(0).get("result").get("requested_table").asText()).isEqualTo("unknown_table");
     }
   }
 
@@ -367,5 +417,23 @@ class GatewayAuthenticationTest {
       List.of(new CatalogColumn("status", "project_status", "string", true, List.of("filter", "group"), List.of("waiting"), false, true)),
       List.of("count", "group_count"), true, 0
     )));
+  }
+
+  private static Map<String, Object> adminSchema() {
+    return Map.of(
+      "client_name", "orbit",
+      "schema_hash", "hash",
+      "generated_at", "now",
+      "tables", List.of(Map.of(
+        "name", "projects",
+        "category", "business",
+        "enabledForPlanning", true,
+        "approxRows", 4,
+        "columns", List.of(Map.of("name", "status", "type", "varchar", "nullable", true, "sensitive", false)),
+        "primaryKey", List.of("id"),
+        "foreignKeys", List.of(),
+        "indexes", List.of()
+      ))
+    );
   }
 }

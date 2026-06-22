@@ -103,6 +103,11 @@ class RagGatewayController {
   private Mono<Object> apiKeyChat(RagClient client, Map<String, Object> request) {
     String message = String.valueOf(request.getOrDefault("message", ""));
     SemanticCatalog catalog = catalogs.catalog(client);
+    Map<String, Object> schema = new LinkedHashMap<>(catalogs.adminSchema(client));
+    String schemaHash = String.valueOf(schema.getOrDefault("schema_hash", catalog.schemaHash()));
+    schema.put("tenant_id", client.clientName());
+    schema.put("project_id", client.clientName());
+    schema.put("client_name", client.clientName());
     Map<String, Object> normalized = mutableCopy(request);
     normalized.putIfAbsent("conversation_id", "laravel-" + client.clientName());
     normalized.putIfAbsent("locale", "ar");
@@ -115,12 +120,13 @@ class RagGatewayController {
       "roles", List.of("laravel-client"),
       "permissions", List.of("live-data.read")
     ));
-    normalized.put("allowed_schema", catalogs.allowedSchema(catalog));
-    normalized.put("semantic_catalog", catalogs.promptSummary(catalog));
+    normalized.put("allowed_schema", Map.of("tables", List.of()));
+    normalized.put("semantic_catalog", Map.of("client_name", client.clientName(), "schema_hash", schemaHash));
     normalized.put("external_tools", List.of(Map.of("name", "database_query")));
     normalized.put("local_tools", List.of());
     normalized.put("rules", Map.of("return_sql", false, "max_tool_calls", 1, "max_rows", 20, "joins_allowed", false));
-    return ai.post("/api/agent/decide", normalized)
+    return ai.post("/api/schema/ingest", schema)
+      .then(ai.post("/api/agent/decide", normalized))
       .flatMap(decision -> finishApiKeyDecision(client, decision, normalized));
   }
 
@@ -200,7 +206,37 @@ class RagGatewayController {
         finalRequest.put("local_rag_results", List.of());
         finalRequest.put("final_answer_instruction", map.get("final_answer_instruction"));
         return ai.post("/api/agent/final", finalRequest);
-      });
+      })
+      .onErrorResume(IllegalArgumentException.class, ex -> finalizeValidationError(normalized, map, toolCall, ex));
+  }
+
+  private Mono<Object> finalizeValidationError(Map<String, Object> normalized, Map<?, ?> decision, Map<?, ?> toolCall, IllegalArgumentException ex) {
+    Object toolCallId = toolCall.get("id");
+    Map<String, Object> validation = new LinkedHashMap<>();
+    validation.put("operation", "validation_error");
+    validation.put("error_code", "validation_error");
+    validation.put("message", ex.getMessage());
+    Object plan = toolCall.get("plan");
+    if (plan instanceof Map<?, ?> planMap) {
+      Object requestedTable = planMap.containsKey("table") ? planMap.get("table") : "";
+      Object requestedOperation = planMap.containsKey("operation") ? planMap.get("operation") : "";
+      validation.put("requested_table", String.valueOf(requestedTable));
+      validation.put("operation_requested", String.valueOf(requestedOperation));
+    }
+    Map<String, Object> finalRequest = new LinkedHashMap<>();
+    finalRequest.put("conversation_id", normalized.get("conversation_id"));
+    finalRequest.put("message", normalized.get("message"));
+    finalRequest.put("locale", normalized.get("locale"));
+    finalRequest.put("conversation_history", normalized.get("conversation_history"));
+    finalRequest.put("tool_results", List.of(Map.of(
+      "tool_call_id", toolCallId == null ? "db_1" : String.valueOf(toolCallId),
+      "tool", "database_query",
+      "result", validation
+    )));
+    finalRequest.put("local_rag_results", List.of());
+    finalRequest.put("final_answer_instruction", decision.get("final_answer_instruction"));
+    log.info("api_key_chat route=database_query validation_error={} reason=returning_error_to_ai", ex.getMessage());
+    return ai.post("/api/agent/final", finalRequest);
   }
 
   private TrustedIdentity identity(ServerWebExchange exchange) {

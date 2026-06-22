@@ -190,7 +190,7 @@ def qwen_project_plan_from_catalog(message_key="question"):
         import json
 
         data = json.loads(payload)
-        plan = SchemaAwarePlanner().plan(data[message_key], data.get("semantic_catalog", {}), data.get("max_rows", 20))
+        plan = SchemaAwarePlanner().plan(data[message_key], data.get("legacy_semantic_catalog", {}), data.get("max_rows", 20))
         if plan:
             plan.pop("intent", None)
             plan.pop("reason", None)
@@ -201,7 +201,7 @@ def qwen_project_plan_from_catalog(message_key="question"):
 
 def test_decide_returns_qwen_database_query(client, auth_headers, monkeypatch):
     async def fake_chat_json(self, messages):
-        assert "semantic_catalog" in messages[1]["content"]
+        assert "schema_context" in messages[1]["content"]
         return qwen_count_invoices()
 
     monkeypatch.setattr(LlmClient, "chat_json", fake_chat_json)
@@ -580,7 +580,7 @@ def test_qwen_classifies_required_natural_messages_without_early_unsupported(cli
         assert data["type"] != "unsupported"
 
 
-def test_database_entity_request_cannot_be_conversational(client, auth_headers, monkeypatch):
+def test_database_entity_request_is_not_rewritten_when_qwen_misroutes(client, auth_headers, monkeypatch):
     async def misrouted_conversational(self, messages):
         return {
             "type": "final_answer",
@@ -594,22 +594,34 @@ def test_database_entity_request_cannot_be_conversational(client, auth_headers, 
     response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("اعرض جميع اسماء العملاء", semantic_catalog=client_catalog()))
     assert response.status_code == 200
     data = response.json()
-    assert data["route"] == "database_query"
-    assert data["requires_database"] is True
-    plan = data["tool_calls"][0]["plan"]
-    assert plan["intent"] == "list_clients"
-    assert plan["operation"] == "list"
-    assert plan["table"] == "clients"
-    assert plan["entities"] == ["clients"]
-    assert plan["fields"] == ["name"]
-    assert plan["columns"] == ["name"]
+    assert data["route"] == "conversational"
+    assert data["type"] == "final_answer"
 
 
-def test_user_name_request_maps_to_logical_users(client, auth_headers, monkeypatch):
-    async def misrouted_unsupported(self, messages):
-        return {"type": "unsupported", "route": "unsupported", "answer": "لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."}
+def test_user_name_request_uses_qwen_plan_not_backend_aliases(client, auth_headers, monkeypatch):
+    async def qwen_user_plan(self, messages):
+        return {
+            "type": "tool_calls",
+            "route": "database_query",
+            "tool_calls": [
+                {
+                    "id": "db_1",
+                    "tool": "database_query",
+                    "plan": {
+                        "intent": "list_users",
+                        "entities": ["users"],
+                        "operation": "list",
+                        "table": "users",
+                        "columns": ["name"],
+                        "fields": ["name"],
+                        "filters": [],
+                        "limit": 20,
+                    },
+                }
+            ],
+        }
 
-    monkeypatch.setattr(LlmClient, "chat_json", misrouted_unsupported)
+    monkeypatch.setattr(LlmClient, "chat_json", qwen_user_plan)
     response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("اعرض جميع اسماء المستخدمين", semantic_catalog=user_catalog()))
     assert response.status_code == 200
     data = response.json()
@@ -641,7 +653,7 @@ def test_user_details_request_maps_to_canonical_users_table(client, auth_headers
     assert "type" in plan["columns"]
 
 
-def test_user_details_request_uses_schema_fallback_when_qwen_says_unsupported(client, auth_headers, monkeypatch):
+def test_user_details_request_does_not_use_schema_fallback_when_qwen_says_unsupported(client, auth_headers, monkeypatch):
     async def unsupported(self, messages):
         return {"type": "unsupported", "route": "unsupported", "answer": "لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."}
 
@@ -649,14 +661,11 @@ def test_user_details_request_uses_schema_fallback_when_qwen_says_unsupported(cl
     response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("اريد بيانات المستخدم Ayman Ibrahim El Sayed", semantic_catalog=user_catalog()))
     assert response.status_code == 200
     data = response.json()
-    assert data["type"] == "tool_calls"
-    plan = data["tool_calls"][0]["plan"]
-    assert plan["operation"] == "select"
-    assert plan["table"] == "users"
-    assert {"column": "name", "operator": "contains", "value": "ayman ibrahim el sayed"} in plan["filters"]
+    assert data["type"] == "unsupported"
+    assert data["route"] == "unsupported"
 
 
-def test_llm_user_table_alias_is_normalized_to_users(client, auth_headers, monkeypatch):
+def test_llm_user_table_alias_is_not_business_normalized_by_ai_module(client, auth_headers, monkeypatch):
     async def alias_plan(self, messages):
         return {
             "type": "tool_calls",
@@ -680,8 +689,7 @@ def test_llm_user_table_alias_is_normalized_to_users(client, auth_headers, monke
     assert response.status_code == 200
     data = response.json()
     plan = data["tool_calls"][0]["plan"]
-    assert plan["table"] == "users"
-    assert plan["intent"] == "user_details"
+    assert plan["table"] == "user"
 
 
 def test_llm_textual_filter_operator_is_normalized_for_user_details(client, auth_headers, monkeypatch):
@@ -712,11 +720,73 @@ def test_llm_textual_filter_operator_is_normalized_for_user_details(client, auth
     assert plan["filters"] == [{"column": "name", "operator": "contains", "value": "Ayman Ibrahim El Sayed"}]
 
 
-def test_vague_follow_up_resolves_to_previous_database_intent(client, auth_headers, monkeypatch):
-    async def unsupported_without_context(self, messages):
-        return {"type": "unsupported", "route": "unsupported", "answer": "لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."}
+def test_schema_ingest_and_search_indexes_database_schema(client, auth_headers):
+    payload = {
+        "tenant_id": "orbit",
+        "project_id": "orbit",
+        "client_name": "orbit",
+        "schema_hash": "schema-test-1",
+        "tables": [
+            {
+                "name": "users",
+                "category": "business",
+                "enabledForPlanning": True,
+                "approxRows": 10,
+                "columns": [
+                    {"name": "id", "type": "int", "nullable": False, "primaryKey": True},
+                    {"name": "name", "type": "varchar", "nullable": True},
+                    {"name": "type", "type": "int", "knownValues": {"2": "normal user"}},
+                    {"name": "password", "type": "varchar", "sensitive": True},
+                ],
+                "primaryKey": ["id"],
+                "foreignKeys": [],
+                "indexes": [{"name": "idx_users_name", "column": "name", "unique": False, "position": 1}],
+            }
+        ],
+    }
+    response = client.post("/api/schema/ingest", headers=auth_headers, json=payload)
+    assert response.status_code == 200
+    assert response.json()["tables_indexed"] == 1
 
-    monkeypatch.setattr(LlmClient, "chat_json", unsupported_without_context)
+    search = client.post(
+        "/api/schema/search",
+        headers=auth_headers,
+        json={"query": "بيانات المستخدمين type 2", "tenant_id": "orbit", "project_id": "orbit", "client_name": "orbit"},
+    )
+    assert search.status_code == 200
+    text = "\n".join(chunk["text"] for chunk in search.json()["results"])
+    assert "Table: users" in text
+    assert "normal user" in text
+    assert "password" in text
+    assert "Sensitive columns excluded" in text
+
+
+def test_vague_follow_up_resolves_to_previous_database_intent(client, auth_headers, monkeypatch):
+    async def qwen_resolves_context(self, messages):
+        import json
+        data = json.loads(messages[1]["content"])
+        assert "اعرض جميع اسماء العملاء" in data["resolved_question_for_intent"]
+        return {
+            "type": "tool_calls",
+            "route": "database_query",
+            "tool_calls": [
+                {
+                    "id": "db_1",
+                    "tool": "database_query",
+                    "plan": {
+                        "intent": "list_clients",
+                        "operation": "list",
+                        "table": "clients",
+                        "columns": ["name"],
+                        "fields": ["name"],
+                        "filters": [],
+                        "limit": 20,
+                    },
+                }
+            ],
+        }
+
+    monkeypatch.setattr(LlmClient, "chat_json", qwen_resolves_context)
     history = [
         {"role": "user", "content": "اعرض جميع اسماء العملاء"},
         {"role": "assistant", "content": "هل تريد عرض أول 20 عميل؟"},

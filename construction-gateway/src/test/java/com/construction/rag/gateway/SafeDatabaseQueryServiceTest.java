@@ -1,6 +1,7 @@
 package com.construction.rag.gateway;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -54,7 +55,7 @@ class SafeDatabaseQueryServiceTest {
     Map<String, Object> result = service.execute(orbit, Map.of(
       "plan", Map.of(
         "operation", "list",
-        "table", "user",
+        "table", "users",
         "columns", List.of("name"),
         "limit", 20
       )
@@ -66,7 +67,7 @@ class SafeDatabaseQueryServiceTest {
   }
 
   @Test
-  void userDetailsAliasIsCanonicalizedBeforeAllowlistValidation() throws Exception {
+  void userDetailsUsesExactLogicalUsersTableBeforePhysicalMapping() throws Exception {
     ClientDataSourceManager manager = mock(ClientDataSourceManager.class);
     DataSource dataSource = mock(DataSource.class);
     Connection connection = mock(Connection.class);
@@ -107,7 +108,7 @@ class SafeDatabaseQueryServiceTest {
     Map<String, Object> result = service.execute(orbit, Map.of(
       "plan", Map.of(
         "operation", "select",
-        "table", "user",
+        "table", "users",
         "columns", List.of("name", "type"),
         "filters", List.of(Map.of("column", "name", "operator", "contains", "value", "Ayman Ibrahim El Sayed")),
         "limit", 1
@@ -118,6 +119,32 @@ class SafeDatabaseQueryServiceTest {
     assertThat(((List<?>) result.get("rows"))).hasSize(1);
     verify(statement).setObject(eq(1), eq("%Ayman Ibrahim El Sayed%"));
     verify(connection).prepareStatement(sql);
+  }
+
+  @Test
+  void nonSchemaUserAliasIsRejectedBeforeExecution() {
+    ClientDataSourceManager manager = mock(ClientDataSourceManager.class);
+    SemanticCatalogService catalogs = mock(SemanticCatalogService.class);
+    RagClient orbit = new RagClient(7, "orbit", "mysql", "db", 3306, "testorbit", "user", "encrypted", "active");
+    when(catalogs.catalog(orbit)).thenReturn(new SemanticCatalog("orbit", 9, "now", "hash", true, List.of(new CatalogTable(
+      "users", "organization_employees", "user", List.of("مستخدم", "مستخدمين"), List.of("users", "organization_employees"),
+      List.of(new CatalogColumn("name", "name", "string", true, List.of("filter", "sort", "group"), List.of(), false, true)),
+      List.of("count", "list", "select"), true, 86
+    ))));
+
+    SafeDatabaseQueryService service = new SafeDatabaseQueryService(manager, catalogs);
+
+    assertThatThrownBy(() -> service.execute(orbit, Map.of(
+      "plan", Map.of(
+        "operation", "list",
+        "table", "user",
+        "columns", List.of("name"),
+        "limit", 20
+      )
+    )).block())
+      .isInstanceOf(IllegalArgumentException.class)
+      .hasMessageContaining("requested_table=user")
+      .hasMessageContaining("allowed_tables=[users]");
   }
 
   @Test

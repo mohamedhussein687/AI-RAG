@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse
 from app.auth import require_module_token
 from app.config import Settings, get_settings
 from app.common.logging import configure_logging
-from app.schemas import AgentDecideRequest, AgentFinalRequest, DocumentIndexRequest, RagSearchRequest, HealthResponse
+from app.schemas import AgentDecideRequest, AgentFinalRequest, DocumentIndexRequest, RagSearchRequest, HealthResponse, SchemaIngestRequest, SchemaSearchRequest
 from app.agent.decision_service import DecisionService
 from app.agent.final_answer_service import FinalAnswerService
 from app.rag.document_service import DocumentService
@@ -13,6 +13,7 @@ from app.rag.retrieval_service import RetrievalService
 from app.rag.qdrant_service import get_qdrant_service
 from app.rag.embedding_client import EmbeddingClient
 from app.rag.reranker_client import RerankerClient
+from app.schema.schema_service import SchemaService
 from app.clients.llm_client import LlmClient
 from app.storage.postgres import health as postgres_health
 
@@ -85,3 +86,30 @@ async def index_document(request: DocumentIndexRequest, settings: Settings = Dep
 @app.post("/api/rag/search", dependencies=[Depends(require_module_token)])
 async def search(request: RagSearchRequest, settings: Settings = Depends(get_settings)):
     return await RetrievalService(settings).search(request)
+
+
+@app.post("/api/schema/ingest", dependencies=[Depends(require_module_token)])
+async def ingest_schema(request: SchemaIngestRequest, settings: Settings = Depends(get_settings)):
+    return await SchemaService(settings).ingest(request)
+
+
+@app.post("/api/schema/search", dependencies=[Depends(require_module_token)])
+async def search_schema(request: SchemaSearchRequest, settings: Settings = Depends(get_settings)):
+    return await SchemaService(settings).search(request)
+
+
+@app.post("/api/chat", dependencies=[Depends(require_module_token)])
+async def module_chat(request: AgentDecideRequest, settings: Settings = Depends(get_settings)):
+    decision = await DecisionService(settings).decide(request)
+    if getattr(decision, "type", None) != "tool_calls":
+        return decision
+    final_request = AgentFinalRequest(
+        conversation_id=request.conversation_id,
+        message=request.message,
+        locale=request.locale,
+        conversation_history=request.conversation_history,
+        tool_results=[],
+        local_rag_results=getattr(decision, "local_rag_results", []),
+        final_answer_instruction=getattr(decision, "final_answer_instruction", None),
+    )
+    return await FinalAnswerService(settings).final(final_request)

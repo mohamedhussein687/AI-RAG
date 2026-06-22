@@ -259,6 +259,72 @@ class RagSearchResponse(StrictModel):
     results: list[RagChunk]
 
 
+class SchemaColumn(StrictModel):
+    name: str
+    type: str | None = None
+    columnType: str | None = None
+    nullable: bool | None = None
+    primaryKey: bool | None = None
+    sensitive: bool = False
+    knownValues: dict[str, str] | list[Any] = Field(default_factory=dict)
+    description: str | None = None
+
+
+class SchemaForeignKey(StrictModel):
+    name: str | None = None
+    column: str
+    referencedTable: str
+    referencedColumn: str
+
+
+class SchemaIndex(StrictModel):
+    name: str
+    column: str
+    unique: bool | None = None
+    position: int | None = None
+
+
+class SchemaTable(StrictModel):
+    name: str
+    category: str = "business"
+    enabledForPlanning: bool = True
+    tableType: str | None = None
+    approxRows: int | None = None
+    description: str | None = None
+    columns: list[SchemaColumn] = Field(default_factory=list)
+    primaryKey: list[str] = Field(default_factory=list)
+    foreignKeys: list[SchemaForeignKey] = Field(default_factory=list)
+    indexes: list[SchemaIndex] = Field(default_factory=list)
+
+
+class SchemaIngestRequest(StrictModel):
+    tenant_id: str
+    project_id: str | None = None
+    client_name: str
+    schema_hash: str
+    generated_at: str | None = None
+    tables: list[SchemaTable]
+
+
+class SchemaIngestResponse(StrictModel):
+    client_name: str
+    schema_hash: str
+    tables_indexed: int
+    chunks_indexed: int
+
+
+class SchemaSearchRequest(StrictModel):
+    query: str = Field(min_length=1)
+    tenant_id: str
+    project_id: str | None = None
+    client_name: str | None = None
+    top_k: int = Field(default=6, ge=1, le=20)
+
+
+class SchemaSearchResponse(StrictModel):
+    results: list[RagChunk]
+
+
 class HealthResponse(StrictModel):
     status: Literal["ok", "degraded"]
     dependencies: dict[str, Literal["ok", "disabled", "error"]]

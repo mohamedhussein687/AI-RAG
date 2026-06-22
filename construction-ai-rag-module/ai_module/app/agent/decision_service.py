@@ -11,9 +11,10 @@ from .json_guard import validate_decision
 from .normalization import ArabicNormalizer
 from .prompt_builder import prefer_arabic
 from .routing import MessageRouter
-from .schema_planner import SchemaAwarePlanner
 from app.rag.retrieval_service import RetrievalService
 from app.schemas import RagSearchRequest, RagFilters
+from app.schema.schema_service import SchemaService
+from app.schemas import SchemaSearchRequest
 from app.clients.llm_client import LlmClient
 import json
 import logging
@@ -32,9 +33,9 @@ class DecisionService:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.retrieval = RetrievalService(settings)
+        self.schema_service = SchemaService(settings)
         self.llm = LlmClient(settings)
         self.router = MessageRouter()
-        self.schema_planner = SchemaAwarePlanner()
 
     async def decide(self, request: AgentDecideRequest):
         try:
@@ -61,16 +62,12 @@ class DecisionService:
             )
             return validate_decision(FinalAnswerDecision(type="final_answer", answer=route.answer, display=Display(type="text", data={"conversation_type": route.intent}), sources=[]).model_dump())
 
-        qwen_decision = await self._qwen_primary_decision(request, arabic, understanding_message)
+        schema_context = await self._schema_context(request, understanding_message)
+        qwen_decision = await self._qwen_primary_decision(request, arabic, understanding_message, schema_context)
         if qwen_decision is not None:
             if isinstance(qwen_decision, dict) and qwen_decision.get(ROUTE_ONLY) in {"rag_search", "hybrid"}:
                 return await self._rag_decision(request, arabic, route=str(qwen_decision[ROUTE_ONLY]))
             return qwen_decision
-
-        if self._has_database_catalog(request):
-            guarded = self._schema_database_plan(request, understanding_message)
-            if guarded:
-                return self._validated_guarded_decision(guarded)
 
         is_doc = any(term.lower() in text for term in DOC_TERMS)
         is_mixed = (any(t in text for t in DELAY_TERMS) and ("سياسة" in text or "policy" in text))
@@ -113,11 +110,40 @@ class DecisionService:
         return validate_decision(UnsupportedDecision(type="unsupported", answer=answer).model_dump())
 
     def _has_database_catalog(self, request: AgentDecideRequest) -> bool:
-        return any(t.name == "database_query" for t in request.external_tools) and (
-            bool(request.semantic_catalog.get("tables")) or bool(request.semantic_catalog.get("tables_index"))
-        )
+        return any(t.name == "database_query" for t in request.external_tools)
 
-    async def _qwen_primary_decision(self, request: AgentDecideRequest, arabic: bool, understanding_message: str):
+    async def _schema_context(self, request: AgentDecideRequest, understanding_message: str) -> list[dict[str, str]]:
+        if not any(t.name == "database_query" for t in request.external_tools):
+            return []
+        try:
+            client_name = str(request.semantic_catalog.get("client_name") or request.user_context.tenant_id)
+            project_id = request.user_context.project_ids[0] if request.user_context.project_ids else None
+            results = (
+                await self.schema_service.search(
+                    SchemaSearchRequest(
+                        query=understanding_message,
+                        tenant_id=request.user_context.tenant_id,
+                        project_id=project_id,
+                        client_name=client_name,
+                        top_k=8,
+                    )
+                )
+            ).results
+            context = [
+                {
+                    "title": chunk.title,
+                    "source_type": chunk.source_type,
+                    "text": chunk.text[: self.settings.max_chunk_chars],
+                }
+                for chunk in results
+            ]
+            log.info("agent_decision schema_context chunks=%s tenant=%s project=%s", len(context), request.user_context.tenant_id, project_id)
+            return context
+        except Exception as exc:
+            log.warning("agent_decision schema_context unavailable error_class=%s", exc.__class__.__name__)
+            return []
+
+    async def _qwen_primary_decision(self, request: AgentDecideRequest, arabic: bool, understanding_message: str, schema_context: list[dict[str, str]]):
         messages = [
             {
                 "role": "system",
@@ -135,15 +161,14 @@ class DecisionService:
                     "For questions that need both database facts and documents, return {\"route\":\"hybrid\"}. "
                     "For ambiguous but answerable questions, return clarification with a helpful Arabic question. "
                     "For operational counts, statistics, details, latest records, filters, grouping, sorting, or aggregation, return a database_query tool-call plan. "
-                    "Never output SQL, SELECT, FROM, executable query text, markdown, explanations, tables not in catalog, columns not in catalog, values not supported by catalog, joins, or credentials. "
-                    "Use only the semantic catalog for database plans. Spring validates and executes plans; you only describe structured intent. "
+                    "Never output SQL, SELECT, FROM, executable query text, markdown, explanations, tables not in schema_context, columns not in schema_context, joins, or credentials. "
+                    "Use only retrieved schema_context for database plans. Spring validates and executes plans; you only describe structured intent. "
                     "For identity questions such as who are you, your name, or what project you work on, do not call tools. Return exactly "
                     '{"type":"final_answer","route":"conversational","answer":"أنا مساعد ORBIT AI، شغال على مشروع ORBIT، وأقدر أساعدك في قراءة وتحليل بيانات المشروع حسب الصلاحيات المتاحة.","display":{"type":"text","data":{}},"sources":[]}. '
-                    "The domain_entities section contains authoritative business mappings. Operational project questions in Arabic or English must use domain entity projects and table projects. "
+                    "Schema context documents describe allowed tables, columns, relationships, enum meanings, and whether a table is business, cms_content, or system. "
+                    "Operational business questions must use business tables from schema_context. "
                     "Never use CMS/content/website tables such as about_us, pages, settings, banners, sliders, or web_* for operational business questions unless the user explicitly asks about website content. "
-                    "The catalog has tables_index for choosing entities and allowed table operations. Detailed tables include columns for filters, grouping, sorting, lists, and aggregates. "
-                    "For simple count questions you may use a table from tables_index when count is allowed, even if that table is not in detailed tables. "
-                    "For filters, grouping, sorting, listing, or aggregates, use only columns present in detailed tables. "
+                    "For filters, grouping, sorting, listing, or aggregates, use only columns present in schema_context. "
                     "For a count, output this exact shape with the chosen table: "
                     '{"type":"tool_calls","tool_calls":[{"id":"db_1","tool":"database_query","plan":{"operation":"count","table":"logical_table","filters":[],"limit":20}}],"local_rag_results":[],"final_answer_instruction":"Answer in Arabic."}. '
                     "For list/group/aggregate, use the same top-level shape and only add allowed plan fields from this set: column, filters, group_by, order_by, limit. "
@@ -159,7 +184,11 @@ class DecisionService:
                         "resolved_question_for_intent": understanding_message,
                         "locale": request.locale,
                         "max_rows": min(request.rules.max_rows, 20),
-                        "semantic_catalog": request.semantic_catalog,
+                        "client_name": request.semantic_catalog.get("client_name"),
+                        "schema_hash": request.semantic_catalog.get("schema_hash"),
+                        "schema_context": schema_context,
+                        "legacy_semantic_catalog": request.semantic_catalog if not schema_context else {},
+                        "previous_tool_results": request.tool_results[-3:],
                     },
                     ensure_ascii=False,
                 ),
@@ -195,7 +224,7 @@ class DecisionService:
                     plan["order_by"]["column"] = plan["order_by"].pop("field")
                 limit_value = plan.get("limit") or request.rules.max_rows
                 plan["limit"] = min(int(limit_value), 20)
-                self._normalize_structured_plan(plan, understanding_message)
+                self._normalize_structured_plan(plan)
                 log.info(
                     "agent_decision route=database_query intent=llm_structured selected_table=%s operation=%s reason=qwen_plan",
                     plan.get("table"),
@@ -203,18 +232,12 @@ class DecisionService:
                 )
         elif decision.get("type") == "final_answer":
             decision["route"] = decision.get("route") or "direct_answer"
-            if decision.get("route") == "conversational" and self._looks_like_database_request(understanding_message):
-                log.warning("agent_decision route=database_query intent=misrouted_conversation selected_table=none operation=none reason=qwen_conversational_for_database_request")
-                return None
             log.info("agent_decision route=%s intent=llm_final_answer selected_table=none operation=none reason=qwen_primary_decision", decision.get("route"))
         elif decision.get("type") == "clarification":
             decision["route"] = decision.get("route") or "clarification_needed"
             log.info("agent_decision route=%s intent=llm_clarification selected_table=none operation=none reason=qwen_primary_decision", decision.get("route"))
         elif decision.get("type") == "unsupported":
             decision["route"] = "unsupported"
-            if self._looks_like_database_request(understanding_message):
-                log.info("agent_decision route=database_query intent=unsupported_database_request selected_table=none operation=none reason=qwen_unsupported_but_schema_may_plan")
-                return None
             log.info("agent_decision route=unsupported intent=llm_unsupported selected_table=none operation=none reason=qwen_primary_decision")
         else:
             log.info("agent_decision route=%s intent=llm_non_tool selected_table=none operation=none reason=qwen_decision", decision.get("type"))
@@ -270,69 +293,14 @@ class DecisionService:
         question = data.get("question") if isinstance(data, dict) and isinstance(data.get("question"), str) else ("هل تقصد سؤالًا عامًا أم تريد إجابة من مستندات مشروع محدد؟" if arabic else "Do you mean a general question or an answer from a specific project's documents?")
         return validate_decision(ClarificationDecision(type="clarification", route="clarification_needed", question=question).model_dump())
 
-    def _validated_guarded_decision(self, guarded: dict):
-        if guarded.get("type") == "tool_calls":
-            plan = guarded["tool_calls"][0]["plan"]
-            log.info(
-                "agent_decision route=database_query intent=%s selected_table=%s operation=%s reason=%s",
-                guarded.get("intent"),
-                plan.get("table"),
-                plan.get("operation"),
-                guarded.get("reason"),
-            )
-        else:
-            log.info(
-                "agent_decision route=%s intent=%s selected_table=none operation=none reason=%s",
-                guarded.get("type"),
-                guarded.get("intent", "guarded_non_tool"),
-                guarded.get("reason", "schema_fallback_after_qwen"),
-            )
-        guarded.pop("intent", None)
-        guarded.pop("reason", None)
-        return validate_decision(guarded)
-
-    def _schema_database_plan(self, request: AgentDecideRequest, message: str | None = None):
-        planned = self.schema_planner.plan(message or request.message, request.semantic_catalog, request.rules.max_rows)
-        if not planned:
-            return None
-        if planned.get("type") == "tool_calls":
-            planned["final_answer_instruction"] = self._instruction(prefer_arabic(request.message, request.locale))
-        return planned
-
-    def _normalize_structured_plan(self, plan: dict, message: str) -> None:
-        raw_table = str(plan.get("table") or "")
-        table = self._canonical_table(raw_table)
-        if table != raw_table:
-            plan["table"] = table
+    def _normalize_structured_plan(self, plan: dict) -> None:
         operation = str(plan.get("operation") or "")
         columns = [str(column) for column in plan.get("columns") or [] if column]
         self._normalize_plan_filters(plan)
         if columns and not plan.get("fields"):
             plan["fields"] = columns
-
-        if table == "clients":
-            plan.setdefault("entities", ["clients"])
-            if operation == "count":
-                plan.setdefault("intent", "count_clients")
-            elif operation in {"list", "select"}:
-                if self._client_name_request(message) and not columns:
-                    plan["columns"] = ["name"]
-                    plan["fields"] = ["name"]
-                plan.setdefault("intent", "list_clients")
-        elif table == "users":
-            plan.setdefault("entities", ["users"])
-            if operation == "count":
-                plan.setdefault("intent", "count_users")
-            elif operation in {"list", "select"}:
-                if self._user_name_request(message) and not columns:
-                    plan["columns"] = ["name"]
-                    plan["fields"] = ["name"]
-                if plan.get("filters") and not plan.get("intent"):
-                    plan["intent"] = "user_details"
-                else:
-                    plan.setdefault("intent", "list_users")
-                if plan.get("intent") == "user_details":
-                    self._normalize_user_detail_filters(plan)
+        if operation in {"details", "select", "list"}:
+            self._normalize_user_detail_filters(plan)
 
     @staticmethod
     def _normalize_user_detail_filters(plan: dict) -> None:
@@ -344,32 +312,6 @@ class DecisionService:
                 continue
             if item.get("column") == "name" and item.get("operator") == "eq":
                 item["operator"] = "contains"
-
-    def _canonical_table(self, value: str) -> str:
-        normalized = self._normalize(value)
-        aliases = {
-            "user": "users",
-            "users": "users",
-            "account": "users",
-            "accounts": "users",
-            "مستخدم": "users",
-            "المستخدم": "users",
-            "مستخدمين": "users",
-            "المستخدمين": "users",
-            "حساب": "users",
-            "الحساب": "users",
-            "حسابات": "users",
-            "الحسابات": "users",
-        }
-        return aliases.get(normalized, value)
-
-    def _client_name_request(self, message: str) -> bool:
-        text = self._normalize(message)
-        return any(ArabicNormalizer.contains_term(text, term) for term in ("اسم", "اسماء", "الاسماء", "name", "names"))
-
-    def _user_name_request(self, message: str) -> bool:
-        text = self._normalize(message)
-        return any(ArabicNormalizer.contains_term(text, term) for term in ("اسم", "اسماء", "الاسماء", "name", "names"))
 
     @staticmethod
     def _normalize_plan_filters(plan: dict) -> None:

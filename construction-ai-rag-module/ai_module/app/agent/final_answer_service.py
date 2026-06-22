@@ -33,13 +33,17 @@ class FinalAnswerService:
             prefix = "حسب المستندات المتاحة:" if arabic else "Based on the available documents:"
             answer = answer_with_citations(prefix, request.local_rag_results)
         elif has_db:
-            no_rows_answer = self._empty_delayed_report_answer(request, arabic)
-            if not no_rows_answer:
-                no_rows_answer = self._empty_project_details_answer(request, arabic)
-            if no_rows_answer:
-                answer = no_rows_answer
+            validation_error_answer = self._validation_error_answer(request, arabic)
+            if validation_error_answer:
+                answer = validation_error_answer
             else:
-                answer = self._deterministic_database_answer(request, arabic) or await self._qwen_database_answer(request, arabic)
+                no_rows_answer = self._empty_delayed_report_answer(request, arabic)
+                if not no_rows_answer:
+                    no_rows_answer = self._empty_project_details_answer(request, arabic)
+                if no_rows_answer:
+                    answer = no_rows_answer
+                else:
+                    answer = self._deterministic_database_answer(request, arabic) or await self._qwen_database_answer(request, arabic)
         else:
             answer = "لا توجد نتائج كافية للإجابة." if arabic else "There is not enough evidence to answer."
 
@@ -103,6 +107,17 @@ class FinalAnswerService:
             payload = result.result
             if isinstance(payload, dict) and payload.get("intent") == "delayed_projects_report" and payload.get("rows") == []:
                 return "لا توجد مشاريع متأخرة في التسليم حسب البيانات الحالية." if arabic else "There are no delayed projects based on the current data."
+        return None
+
+    def _validation_error_answer(self, request: AgentFinalRequest, arabic: bool) -> str | None:
+        for result in request.tool_results:
+            payload = result.result
+            if not isinstance(payload, dict) or payload.get("operation") != "validation_error":
+                continue
+            requested_table = payload.get("requested_table") or "المطلوب"
+            if arabic:
+                return f"لا أستطيع تنفيذ هذا الاستعلام لأن الجدول أو الحقول المطلوبة غير موجودة أو غير مسموحة لهذا المشروع: {requested_table}."
+            return f"I cannot run this query because the requested table or fields are missing or not allowed for this project: {requested_table}."
         return None
 
     def _empty_project_details_answer(self, request: AgentFinalRequest, arabic: bool) -> str | None:

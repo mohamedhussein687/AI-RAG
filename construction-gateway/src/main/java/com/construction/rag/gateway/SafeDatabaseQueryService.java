@@ -41,7 +41,7 @@ class SafeDatabaseQueryService {
     Map<?, ?> plan = requireMap(toolCall.get("plan"), "plan");
     String operation = string(plan.get("operation"));
     String requestedTable = string(plan.get("table"));
-    String table = canonicalTable(requestedTable);
+    String table = identifier(requestedTable);
     CatalogTable catalogTable = catalog.table(table);
     if (catalogTable == null) throw new IllegalArgumentException(tableValidationError(requestedTable, table, catalog));
     if (!catalogTable.allowedOperations().contains(operation)) throw new IllegalArgumentException("operation is not allowlisted");
@@ -410,23 +410,6 @@ class SafeDatabaseQueryService {
     String id = string(value).toLowerCase(Locale.ROOT);
     if (!id.matches("[a-z_][a-z0-9_]*")) throw new IllegalArgumentException("invalid identifier");
     return id;
-  }
-
-  private String canonicalTable(Object value) {
-    String raw = string(value).trim();
-    String lower = raw.toLowerCase(Locale.ROOT);
-    String normalizedArabic = lower
-      .replace("أ", "ا").replace("إ", "ا").replace("آ", "ا")
-      .replace("ى", "ي").replace("ة", "ه")
-      .replaceAll("[؟?؛،,!.:]+", " ")
-      .replaceAll("\\s+", " ")
-      .trim();
-    return switch (normalizedArabic) {
-      case "user", "users", "account", "accounts",
-           "مستخدم", "المستخدم", "مستخدمين", "المستخدمين",
-           "حساب", "الحساب", "حسابات", "الحسابات" -> "users";
-      default -> identifier(raw);
-    };
   }
 
   private String tableValidationError(String requestedTable, String normalizedTable, SemanticCatalog catalog) {
