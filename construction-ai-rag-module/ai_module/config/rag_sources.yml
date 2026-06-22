@@ -1,0 +1,20 @@
+sources:
+  - name: construction_mysql
+    tenant_id: orbit
+    project_id: default
+    tables:
+      - name: projects
+        primary_key: id
+        updated_at_column: updated_at
+        deleted_at_column: deleted_at
+        document_template: construction_project
+      - name: tasks
+        primary_key: id
+        updated_at_column: updated_at
+        deleted_at_column: deleted_at
+        document_template: construction_task
+      - name: clients
+        primary_key: id
+        updated_at_column: updated_at
+        deleted_at_column: deleted_at
+        document_template: client

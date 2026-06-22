@@ -169,8 +169,15 @@ services:
     build:
       context: ./ai_module
     restart: unless-stopped
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["python", "-m", "ingestion_worker", "worker", "--interval", "${INGESTION_INTERVAL_SECONDS:-60}"]
     env_file: /home/rag/.config/construction-rag/production.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      embedding-service:
+        condition: service_healthy
     profiles: ["worker"]
     networks: [rag-backend, rag-models]
     logging: *log-options

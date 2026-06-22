@@ -32,6 +32,13 @@ class InMemoryQdrantService:
         for point_id in point_ids:
             self.points.pop(point_id, None)
 
+    async def mark_inactive(self, point_ids: list[str]) -> None:
+        for point_id in point_ids:
+            point = self.points.get(point_id)
+            if point:
+                point.payload["status"] = "deleted"
+                point.payload["is_active"] = False
+
     async def search(self, query_vector: list[float], user_context: UserContext, filters: RagFilters, limit: int) -> list[tuple[dict[str, Any], float]]:
         scored: list[tuple[dict[str, Any], float]] = []
         for point in self.points.values():
@@ -41,6 +48,8 @@ class InMemoryQdrantService:
             if filters.project_id and str(payload.get("project_id")) != filters.project_id:
                 continue
             if filters.document_types and payload.get("source_type") not in filters.document_types:
+                continue
+            if payload.get("is_active") is False:
                 continue
             scored.append((payload, cosine(query_vector, point.vector)))
         return sorted(scored, key=lambda item: item[1], reverse=True)[:limit]
@@ -62,7 +71,7 @@ class QdrantService:
                 collection_name=self.collection,
                 vectors_config=models.VectorParams(size=self.settings.embedding_dimension, distance=models.Distance.COSINE),
             )
-        for field in ("tenant_id", "project_id", "document_id", "document_version", "source_type", "status", "index_version"):
+        for field in ("tenant_id", "project_id", "document_id", "document_version", "source_type", "status", "index_version", "is_active"):
             try:
                 await self.client.create_payload_index(self.collection, field_name=field, field_schema=models.PayloadSchemaType.KEYWORD)
             except Exception:
@@ -82,6 +91,15 @@ class QdrantService:
     async def delete(self, point_ids: list[str]) -> None:
         await self.client.delete(self.collection, points_selector=models.PointIdsList(points=[qdrant_point_id(point_id) for point_id in point_ids]), wait=True)
 
+    async def mark_inactive(self, point_ids: list[str]) -> None:
+        await self.ensure_collection()
+        await self.client.set_payload(
+            collection_name=self.collection,
+            payload={"status": "deleted", "is_active": False},
+            points=[qdrant_point_id(point_id) for point_id in point_ids],
+            wait=True,
+        )
+
     async def search(self, query_vector: list[float], user_context: UserContext, filters: RagFilters, limit: int) -> list[tuple[dict[str, Any], float]]:
         await self.ensure_collection()
         must = [models.FieldCondition(key="tenant_id", match=models.MatchValue(value=user_context.tenant_id))]
@@ -90,6 +108,7 @@ class QdrantService:
         if filters.document_types:
             must.append(models.FieldCondition(key="source_type", match=models.MatchAny(any=filters.document_types)))
         must.append(models.FieldCondition(key="status", match=models.MatchValue(value="indexed")))
+        must.append(models.FieldCondition(key="is_active", match=models.MatchValue(value=True)))
         must.append(models.FieldCondition(key="index_version", match=models.MatchValue(value=self.settings.index_version)))
         qfilter = models.Filter(must=must)
         response = await self.client.query_points(collection_name=self.collection, query=query_vector, query_filter=qfilter, limit=limit, with_payload=True)
@@ -109,6 +128,10 @@ class QdrantService:
 
 
 def qdrant_point_id(point_id: str) -> str:
+    try:
+        return str(uuid.UUID(point_id))
+    except ValueError:
+        pass
     return str(uuid.uuid5(uuid.NAMESPACE_URL, point_id))
 
 def cosine(a: list[float], b: list[float]) -> float:

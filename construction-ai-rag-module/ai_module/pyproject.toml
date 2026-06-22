@@ -10,8 +10,10 @@ dependencies = [
   "uvicorn>=0.30",
   "SQLAlchemy>=2.0",
   "asyncpg>=0.29",
+  "aiomysql>=0.2",
   "alembic>=1.13",
-  "qdrant-client>=1.10",
+  "qdrant-client==1.12.1",
+  "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -21,3 +23,6 @@ test = ["pytest>=8", "pytest-asyncio>=0.23", "pytest-httpx>=0.30", "respx>=0.21"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.setuptools.packages.find]
+include = ["app*", "ingestion_worker*"]

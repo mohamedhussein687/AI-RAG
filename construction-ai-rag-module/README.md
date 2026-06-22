@@ -57,6 +57,23 @@ curl -X POST http://localhost:8000/api/rag/documents   -H "Authorization: Bearer
 curl -X POST http://localhost:8000/api/rag/search   -H "Authorization: Bearer $AI_MODULE_TOKEN"   -H 'Content-Type: application/json'   -d '{"query":"خطوات التعامل مع تأخر المشروع","user_context":{"tenant_id":"3","project_ids":["22"],"permissions":["docs.view","policies.view"]},"top_k":5,"filters":{"document_types":["policy"],"project_id":"22"}}'
 ```
 
+## MySQL-to-RAG ingestion
+
+Phase 1 external MySQL ingestion uses `updated_at` / `deleted_at` polling to index configured MySQL rows into PostgreSQL metadata and Qdrant vectors. See the production runbook:
+
+```text
+construction-ai-rag-module/docs/mysql-ingestion-phase1-runbook.md
+```
+
+Operator commands:
+
+```bash
+python -m ingestion_worker sync --source construction_mysql --mode full
+python -m ingestion_worker sync --source construction_mysql --mode incremental
+python -m ingestion_worker worker --interval 60
+python -m ingestion_worker status --source construction_mysql
+```
+
 ## Security notes
 
 - Protected endpoints require `Authorization: Bearer AI_MODULE_TOKEN`.

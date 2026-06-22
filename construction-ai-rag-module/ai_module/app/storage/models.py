@@ -1,4 +1,4 @@
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -98,3 +98,40 @@ class ModelVersion(Base):
     revision: Mapped[str] = mapped_column(String)
     serving_image: Mapped[str] = mapped_column(String)
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class RagSyncState(Base):
+    __tablename__ = "rag_sync_state"
+    __table_args__ = (UniqueConstraint("tenant_id", "project_id", "source_name", "source_table", name="uq_rag_sync_state_source"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    project_id: Mapped[str] = mapped_column(String, index=True)
+    source_name: Mapped[str] = mapped_column(String, index=True)
+    source_table: Mapped[str] = mapped_column(String, index=True)
+    last_sync_at: Mapped[object | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_success_at: Mapped[object | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String, index=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class RagIndexedDocument(Base):
+    __tablename__ = "rag_indexed_documents"
+    __table_args__ = (UniqueConstraint("tenant_id", "project_id", "source_name", "source_table", "source_id", name="uq_rag_indexed_documents_source"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(String, index=True)
+    project_id: Mapped[str] = mapped_column(String, index=True)
+    source_name: Mapped[str] = mapped_column(String, index=True)
+    source_table: Mapped[str] = mapped_column(String, index=True)
+    source_id: Mapped[str] = mapped_column(String, index=True)
+    qdrant_point_id: Mapped[str] = mapped_column(String, index=True)
+    document_hash: Mapped[str] = mapped_column(String, index=True)
+    content_preview: Mapped[str] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    source_updated_at: Mapped[object | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    indexed_at: Mapped[object | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
