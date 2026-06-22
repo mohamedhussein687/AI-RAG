@@ -7,6 +7,7 @@ from .normalization import ArabicNormalizer
 class SchemaAwarePlanner:
     PROJECT_TERMS = ("مشروع", "مشاريع", "مشروعات", "project", "projects")
     CLIENT_TERMS = ("عميل", "عملاء", "العملاء", "client", "clients", "customer", "customers")
+    USER_TERMS = ("مستخدم", "مستخدمين", "المستخدمين", "users", "user", "system users")
     LIST_TERMS = ("اعرض", "عرض", "هات", "وريني", "اظهر", "show", "list", "display")
     NAME_TERMS = ("اسم", "اسماء", "الاسماء", "name", "names")
     COUNT_TERMS = ("كم", "عدد", "how many", "count", "total")
@@ -24,6 +25,8 @@ class SchemaAwarePlanner:
         text = ArabicNormalizer.normalize(message)
         if self._is_client_question(text):
             return self._client_plan(text, catalog, max_rows)
+        if self._is_user_question(text):
+            return self._user_plan(text, catalog, max_rows)
         if not self._is_project_question(text):
             return None
         project = self._project_entity(catalog)
@@ -52,6 +55,18 @@ class SchemaAwarePlanner:
             name_column = self._first_column(table, ("name", "client_name", "title", "full_name"))
             columns = [name_column] if name_column else []
             return self._tool_plan("list_clients", "list", "clients", columns=columns, limit=min(max_rows, 20), extra={"entities": ["clients"], "fields": columns})
+        return None
+
+    def _user_plan(self, text: str, catalog: dict[str, Any], max_rows: int) -> dict[str, Any] | None:
+        table = self._table(catalog, "users")
+        if not table:
+            return None
+        if self._is_count(text):
+            return self._tool_plan("count_users", "count", "users", limit=min(max_rows, 20), extra={"entities": ["users"]})
+        if self._is_list(text) or any(ArabicNormalizer.contains_term(text, term) for term in self.NAME_TERMS):
+            name_column = self._first_column(table, ("name", "full_name", "username", "email"))
+            columns = [name_column] if name_column else []
+            return self._tool_plan("list_users", "list", "users", columns=columns, limit=min(max_rows, 20), extra={"entities": ["users"], "fields": columns})
         return None
 
     def _count_plan(self, text: str, project: dict[str, Any], max_rows: int) -> dict[str, Any]:
@@ -145,6 +160,9 @@ class SchemaAwarePlanner:
 
     def _is_client_question(self, text: str) -> bool:
         return any(ArabicNormalizer.contains_term(text, term) for term in self.CLIENT_TERMS)
+
+    def _is_user_question(self, text: str) -> bool:
+        return any(ArabicNormalizer.contains_term(text, term) for term in self.USER_TERMS)
 
     def _is_list(self, text: str) -> bool:
         return any(ArabicNormalizer.contains_term(text, term) for term in self.LIST_TERMS)

@@ -312,8 +312,21 @@ class DecisionService:
                     plan["columns"] = ["name"]
                     plan["fields"] = ["name"]
                 plan.setdefault("intent", "list_clients")
+        elif table == "users":
+            plan.setdefault("entities", ["users"])
+            if operation == "count":
+                plan.setdefault("intent", "count_users")
+            elif operation in {"list", "select"}:
+                if self._user_name_request(message) and not columns:
+                    plan["columns"] = ["name"]
+                    plan["fields"] = ["name"]
+                plan.setdefault("intent", "list_users")
 
     def _client_name_request(self, message: str) -> bool:
+        text = self._normalize(message)
+        return any(ArabicNormalizer.contains_term(text, term) for term in ("اسم", "اسماء", "الاسماء", "name", "names"))
+
+    def _user_name_request(self, message: str) -> bool:
         text = self._normalize(message)
         return any(ArabicNormalizer.contains_term(text, term) for term in ("اسم", "اسماء", "الاسماء", "name", "names"))
 

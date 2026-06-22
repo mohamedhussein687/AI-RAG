@@ -296,13 +296,18 @@ class GatewayAuthenticationTest {
       new CatalogTable("app_settings", "app_settings", "settings", List.of(), List.of("app_settings"), List.of(), List.of("count"), false, 1),
       new CatalogTable("projects", "projects", "project", List.of("مشروع", "مشاريع"), List.of("projects", "project"),
         List.of(new CatalogColumn("status", "project_status", "string", true, List.of("filter", "group"), List.of("waiting"), false, true)),
-        List.of("count", "group_count"), true, 1757)
+        List.of("count", "group_count"), true, 1757),
+      new CatalogTable("users", "organization_employees", "user", List.of("مستخدم", "مستخدمين"), List.of("users", "organization_employees"),
+        List.of(new CatalogColumn("name", "name", "string", true, List.of("filter", "sort", "group"), List.of(), false, true)),
+        List.of("count", "list", "select"), true, 86)
     ));
 
     Map<String, Object> prompt = service.promptSummary(catalog);
 
     assertThat(prompt.toString()).contains("domain_entities");
     assertThat(prompt.toString()).contains("projects");
+    assertThat(prompt.toString()).contains("organization_employees");
+    assertThat(prompt.toString()).contains("users");
     assertThat(prompt.toString()).doesNotContain("about_us");
     assertThat(prompt.toString()).doesNotContain("about_us_translations");
     assertThat(prompt.toString()).doesNotContain("app_settings");

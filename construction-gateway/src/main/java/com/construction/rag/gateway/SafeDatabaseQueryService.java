@@ -54,8 +54,8 @@ class SafeDatabaseQueryService {
     String where = buildWhere(filters, catalogTable, params);
     int limit = limit(plan.get("limit"));
     String sql = buildSql(operation, plan, catalogTable, where, limit);
-    log.info("safe_database_query operation={} selected_table={} physical_table={} filters={} limit={} sql_template={} reason=validated_catalog_plan",
-      operation, table, catalogTable.physicalName(), filters.size(), limit, sql);
+    log.info("safe_database_query operation={} db_name={} selected_table={} physical_table={} filters={} limit={} sql_template={} bound_params={} reason=validated_catalog_plan",
+      operation, client.dbName(), table, catalogTable.physicalName(), filters.size(), limit, sql, safeParams(params));
     DataSource dataSource = dataSources.dataSource(client);
     try (Connection connection = dataSource.getConnection()) {
       connection.setReadOnly(true);
@@ -64,7 +64,10 @@ class SafeDatabaseQueryService {
         statement.setQueryTimeout(10);
         for (int i = 0; i < params.size(); i++) statement.setObject(i + 1, params.get(i));
         try (ResultSet rs = statement.executeQuery()) {
-          return readResult(operation, plan, catalogTable, rs);
+          Map<String, Object> result = readResult(operation, plan, catalogTable, rs);
+          log.info("safe_database_query_result operation={} db_name={} selected_table={} physical_table={} row_count={} reason=validated_catalog_plan",
+            operation, client.dbName(), table, catalogTable.physicalName(), resultRowCount(result));
+          return result;
         }
       }
     }
@@ -157,15 +160,17 @@ class SafeDatabaseQueryService {
       validateActualSchema(connection, table, plan, List.of());
       for (CatalogColumn column : lookupColumns) validateColumnExists(connection, table, column);
       String exactSql = "select " + select + " from " + table.physicalName() + " where " + exactWhere + " limit " + limit;
-      log.info("safe_database_query operation=details selected_table={} physical_table={} filters=lookup_exact limit={} sql_template={} reason=validated_catalog_plan",
-        table.logicalName(), table.physicalName(), limit, exactSql);
+      log.info("safe_database_query operation=details db_name={} selected_table={} physical_table={} filters=lookup_exact limit={} sql_template={} bound_params_count={} reason=validated_catalog_plan",
+        client.dbName(), table.logicalName(), table.physicalName(), limit, exactSql, lookupColumns.size());
       List<Map<String, Object>> rows = queryRows(connection, exactSql, lookupColumns.stream().map(c -> (Object) lookupValue).toList(), columns);
       if (rows.isEmpty()) {
         String fuzzySql = "select " + select + " from " + table.physicalName() + " where " + fuzzyWhere + order + " limit " + limit;
-        log.info("safe_database_query operation=details selected_table={} physical_table={} filters=lookup_fuzzy limit={} sql_template={} reason=validated_catalog_plan",
-          table.logicalName(), table.physicalName(), limit, fuzzySql);
+        log.info("safe_database_query operation=details db_name={} selected_table={} physical_table={} filters=lookup_fuzzy limit={} sql_template={} bound_params_count={} reason=validated_catalog_plan",
+          client.dbName(), table.logicalName(), table.physicalName(), limit, fuzzySql, lookupColumns.size());
         rows = queryRows(connection, fuzzySql, lookupColumns.stream().map(c -> (Object) ("%" + lookupValue + "%")).toList(), columns);
       }
+      log.info("safe_database_query_result operation=details db_name={} selected_table={} physical_table={} row_count={} reason=validated_catalog_plan",
+        client.dbName(), table.logicalName(), table.physicalName(), rows.size());
       Map<String, Object> result = new LinkedHashMap<>();
       result.put("operation", "details");
       Object intent = plan.get("intent");
@@ -189,9 +194,11 @@ class SafeDatabaseQueryService {
     try (Connection connection = dataSource.getConnection()) {
       connection.setReadOnly(true);
       validateActualSchema(connection, table, plan, List.of(Map.of("column", lookup.column().logicalName(), "operator", "code_equals_normalized", "value", lookup.normalized())));
-      log.info("safe_database_query operation=details selected_table={} physical_table={} code_field={} filters=code_equals_normalized limit={} sql_template={} reason=validated_catalog_plan",
-        table.logicalName(), table.physicalName(), lookup.column().logicalName(), limit, sql);
+      log.info("safe_database_query operation=details db_name={} selected_table={} physical_table={} code_field={} filters=code_equals_normalized limit={} sql_template={} bound_params_count=3 reason=validated_catalog_plan",
+        client.dbName(), table.logicalName(), table.physicalName(), lookup.column().logicalName(), limit, sql);
       List<Map<String, Object>> rows = queryRows(connection, sql, List.of(lookup.raw(), lookup.normalized(), lookup.compact()), columns);
+      log.info("safe_database_query_result operation=details db_name={} selected_table={} physical_table={} row_count={} reason=validated_catalog_plan",
+        client.dbName(), table.logicalName(), table.physicalName(), rows.size());
       Map<String, Object> result = new LinkedHashMap<>();
       result.put("operation", "details");
       Object intent = plan.get("intent");
@@ -402,6 +409,24 @@ class SafeDatabaseQueryService {
     String id = string(value).toLowerCase(Locale.ROOT);
     if (!id.matches("[a-z_][a-z0-9_]*")) throw new IllegalArgumentException("invalid identifier");
     return id;
+  }
+
+  private List<Object> safeParams(List<Object> params) {
+    return params.stream().map(this::safeParam).toList();
+  }
+
+  private Object safeParam(Object value) {
+    if (value == null) return null;
+    String text = String.valueOf(value);
+    String lower = text.toLowerCase(Locale.ROOT);
+    if (lower.contains("password") || lower.contains("token") || lower.contains("secret") || lower.contains("key")) return "[REDACTED]";
+    return text.length() > 80 ? text.substring(0, 80) + "..." : value;
+  }
+
+  private int resultRowCount(Map<String, Object> result) {
+    Object rows = result.get("rows");
+    if (rows instanceof List<?> list) return list.size();
+    return result.containsKey("count") ? 1 : 0;
   }
 
   private void addDelayDays(Map<String, Object> row) {

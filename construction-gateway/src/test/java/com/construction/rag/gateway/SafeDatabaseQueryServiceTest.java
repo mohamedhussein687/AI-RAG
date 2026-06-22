@@ -20,6 +20,52 @@ import org.mockito.ArgumentCaptor;
 
 class SafeDatabaseQueryServiceTest {
   @Test
+  void logicalUsersTableCanMapToOrganizationEmployees() throws Exception {
+    ClientDataSourceManager manager = mock(ClientDataSourceManager.class);
+    DataSource dataSource = mock(DataSource.class);
+    Connection connection = mock(Connection.class);
+    DatabaseMetaData metaData = mock(DatabaseMetaData.class);
+    ResultSet tables = mock(ResultSet.class);
+    ResultSet columns = mock(ResultSet.class);
+    PreparedStatement statement = mock(PreparedStatement.class);
+    ResultSet queryResult = mock(ResultSet.class);
+    SemanticCatalogService catalogs = mock(SemanticCatalogService.class);
+    RagClient orbit = new RagClient(7, "orbit", "mysql", "db", 3306, "testorbit", "user", "encrypted", "active");
+
+    when(manager.dataSource(orbit)).thenReturn(dataSource);
+    when(dataSource.getConnection()).thenReturn(connection);
+    when(connection.getCatalog()).thenReturn("testorbit");
+    when(connection.getMetaData()).thenReturn(metaData);
+    when(metaData.getTables(eq("testorbit"), any(), eq("organization_employees"), any())).thenReturn(tables);
+    when(tables.next()).thenReturn(true);
+    when(metaData.getColumns("testorbit", null, "organization_employees", "name")).thenReturn(columns);
+    when(columns.next()).thenReturn(true);
+    when(connection.prepareStatement("select name as name from organization_employees limit 20")).thenReturn(statement);
+    when(statement.executeQuery()).thenReturn(queryResult);
+    when(queryResult.next()).thenReturn(true, false);
+    when(queryResult.getObject("name")).thenReturn("Orbit User");
+    when(catalogs.catalog(orbit)).thenReturn(new SemanticCatalog("orbit", 9, "now", "hash", true, List.of(new CatalogTable(
+      "users", "organization_employees", "user", List.of("مستخدم", "مستخدمين"), List.of("users", "user", "organization_employees"),
+      List.of(new CatalogColumn("name", "name", "string", true, List.of("filter", "sort", "group"), List.of(), false, true)),
+      List.of("count", "list", "select"), true, 86
+    ))));
+
+    SafeDatabaseQueryService service = new SafeDatabaseQueryService(manager, catalogs);
+    Map<String, Object> result = service.execute(orbit, Map.of(
+      "plan", Map.of(
+        "operation", "list",
+        "table", "users",
+        "columns", List.of("name"),
+        "limit", 20
+      )
+    )).block();
+
+    assertThat(result).containsEntry("table", "users");
+    assertThat(((List<?>) result.get("rows"))).hasSize(1);
+    verify(connection).prepareStatement("select name as name from organization_employees limit 20");
+  }
+
+  @Test
   void orbitMapsLogicalStatusToPhysicalProjectStatus() throws Exception {
     ClientDataSourceManager manager = mock(ClientDataSourceManager.class);
     DataSource dataSource = mock(DataSource.class);

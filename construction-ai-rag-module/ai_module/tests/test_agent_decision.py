@@ -62,6 +62,42 @@ def client_catalog():
     }
 
 
+def user_catalog():
+    return {
+        "catalog_version": 9,
+        "schema_hash": "users-test",
+        "domain_entities": [
+            {
+                "entity": "users",
+                "table": "users",
+                "physical_table": "organization_employees",
+                "purpose": "operational application users/accounts",
+                "list_operation": "list",
+                "count_operation": "count",
+                "display_fields": ["name", "email"],
+                "reason": "real application user table selected from schema",
+            }
+        ],
+        "tables_index": [
+            {"name": "users", "allowed_operations": ["count", "list", "select"]},
+        ],
+        "tables": [
+            {
+                "name": "users",
+                "entity_ar": ["مستخدم", "مستخدمين", "المستخدمين"],
+                "entity_en": ["user", "users", "system users"],
+                "allowed_operations": ["count", "list", "select"],
+                "columns": [
+                    {"name": "id", "type": "number", "operations": ["filter", "sort"], "enum_values": []},
+                    {"name": "name", "type": "string", "operations": ["filter", "sort"], "enum_values": []},
+                    {"name": "email", "type": "string", "operations": ["filter", "sort"], "enum_values": []},
+                    {"name": "created_at", "type": "date", "operations": ["filter", "sort"], "enum_values": []},
+                ],
+            }
+        ],
+    }
+
+
 def project_catalog_with_cms_table():
     return {
         "catalog_version": 6,
@@ -564,6 +600,25 @@ def test_database_entity_request_cannot_be_conversational(client, auth_headers, 
     assert plan["operation"] == "list"
     assert plan["table"] == "clients"
     assert plan["entities"] == ["clients"]
+    assert plan["fields"] == ["name"]
+    assert plan["columns"] == ["name"]
+
+
+def test_user_name_request_maps_to_logical_users(client, auth_headers, monkeypatch):
+    async def misrouted_unsupported(self, messages):
+        return {"type": "unsupported", "route": "unsupported", "answer": "لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."}
+
+    monkeypatch.setattr(LlmClient, "chat_json", misrouted_unsupported)
+    response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("اعرض جميع اسماء المستخدمين", semantic_catalog=user_catalog()))
+    assert response.status_code == 200
+    data = response.json()
+    assert data["route"] == "database_query"
+    assert data["requires_database"] is True
+    plan = data["tool_calls"][0]["plan"]
+    assert plan["intent"] == "list_users"
+    assert plan["operation"] == "list"
+    assert plan["table"] == "users"
+    assert plan["entities"] == ["users"]
     assert plan["fields"] == ["name"]
     assert plan["columns"] == ["name"]
 

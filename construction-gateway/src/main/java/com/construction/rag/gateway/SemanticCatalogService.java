@@ -30,7 +30,7 @@ class SemanticCatalogService {
   private static final int MAX_TABLES_INDEX_IN_PROMPT = 80;
   private static final int MAX_DETAILED_TABLES_IN_PROMPT = 10;
   private static final int MAX_COLUMNS_IN_PROMPT = 12;
-  private static final int CATALOG_VERSION = 8;
+  private static final int CATALOG_VERSION = 9;
   private static final Set<String> CMS_TABLE_NAMES = Set.of(
     "about_us", "pages", "settings", "banners", "sliders", "menus", "menu_items", "cms_pages", "cms_blocks"
   );
@@ -264,20 +264,23 @@ class SemanticCatalogService {
             ));
           }
         }
+        String userTable = userPhysicalTable(c, columnsByTable);
         for (Map.Entry<String, List<ColumnSource>> entry : columnsByTable.entrySet()) {
           String table = entry.getKey();
           if (!safeIdentifier(table)) continue;
+          if ("users".equals(table) && userTable != null && !"users".equals(userTable)) continue;
+          String logicalTable = table.equals(userTable) ? "users" : table;
           List<CatalogColumn> columns = new ArrayList<>();
           Set<String> usedLogical = new LinkedHashSet<>();
           for (ColumnSource source : entry.getValue()) {
             if (!safeIdentifier(source.name())) continue;
             boolean sensitive = sensitive(source.name());
-            String logical = logicalColumn(table, source.name(), usedLogical);
+            String logical = logicalColumn(logicalTable, source.name(), usedLogical);
             usedLogical.add(logical);
             columns.add(new CatalogColumn(logical, source.name(), fieldType(source.type()), source.nullable(), operations(source.type(), sensitive), enumValues(c, table, source), sensitive, !sensitive));
           }
           boolean enabled = !cmsContentTable(table) && columns.stream().anyMatch(CatalogColumn::enabled);
-          tables.add(new CatalogTable(table, table, entityName(table), arabicSynonyms(table), englishSynonyms(table), columns, tableOperations(columns), enabled, approximateRows(c, table)));
+          tables.add(new CatalogTable(logicalTable, table, entityName(logicalTable), arabicSynonyms(logicalTable), englishSynonyms(logicalTable, table), columns, tableOperations(columns), enabled, approximateRows(c, table)));
         }
       }
     } catch (Exception ex) {
@@ -285,6 +288,25 @@ class SemanticCatalogService {
     }
     tables.sort(Comparator.comparing(CatalogTable::logicalName));
     return new SemanticCatalog(client.clientName(), CATALOG_VERSION, Instant.now().toString(), schemaHash, true, tables);
+  }
+
+  private static String userPhysicalTable(Connection c, Map<String, List<ColumnSource>> columnsByTable) {
+    List<String> candidates = List.of(
+      "organization_employees", "app_users", "app_user", "user_accounts", "system_users",
+      "tenant_users", "employees", "members", "admins", "users", "web_employees"
+    );
+    for (String candidate : candidates) {
+      List<ColumnSource> columns = columnsByTable.get(candidate);
+      if (columns == null || columns.isEmpty()) continue;
+      if (!hasColumn(columns, "name") || !hasColumn(columns, "email")) continue;
+      long rows = approximateRows(c, candidate);
+      if (rows > 0 || !"users".equals(candidate)) return candidate;
+    }
+    return columnsByTable.containsKey("users") ? "users" : null;
+  }
+
+  private static boolean hasColumn(List<ColumnSource> columns, String name) {
+    return columns.stream().anyMatch(c -> name.equals(c.name()));
   }
 
   private static boolean sensitive(String name) {
@@ -326,6 +348,24 @@ class SemanticCatalogService {
       Map<String, Object> latestProject = latestProject(projects);
       if (!latestProject.isEmpty()) projectEntity.put("latest_project", latestProject);
       entities.add(projectEntity);
+    }
+    CatalogTable users = catalog.table("users");
+    if (users != null) {
+      List<String> display = new ArrayList<>();
+      for (String candidate : List.of("name", "email", "is_active", "status", "type", "created_at", "updated_at")) {
+        CatalogColumn column = users.column(candidate);
+        if (column != null) display.add(column.logicalName());
+      }
+      entities.add(new LinkedHashMap<>(Map.of(
+        "entity", "users",
+        "table", users.logicalName(),
+        "physical_table", users.physicalName(),
+        "purpose", "operational application users/accounts",
+        "list_operation", "list",
+        "count_operation", "count",
+        "display_fields", List.copyOf(display),
+        "reason", "real application user table selected from schema"
+      )));
     }
     return List.copyOf(entities);
   }
@@ -641,10 +681,14 @@ class SemanticCatalogService {
     return List.of(table);
   }
 
-  private static List<String> englishSynonyms(String table) {
+  private static List<String> englishSynonyms(String table, String physicalTable) {
     List<String> out = new ArrayList<>();
     out.add(table);
     out.add(singular(table));
+    if (!physicalTable.equals(table)) {
+      out.add(physicalTable);
+      out.add(singular(physicalTable));
+    }
     return List.copyOf(new LinkedHashSet<>(out));
   }
 
