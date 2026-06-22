@@ -69,22 +69,8 @@ class SemanticCatalogService {
     List<Map<String, Object>> tables = new ArrayList<>();
     for (CatalogTable table : candidates) {
       if (!table.enabled()) continue;
-      List<Map<String, Object>> compactColumns = new ArrayList<>();
-      for (CatalogColumn column : table.columns()) {
-        if (!column.enabled()) continue;
-        compactColumns.add(Map.of(
-          "name", column.logicalName(),
-          "type", column.fieldType(),
-          "operations", column.allowedOperations(),
-          "enum_values", column.enumValues()
-        ));
-        if (compactColumns.size() >= MAX_COLUMNS_IN_PROMPT) break;
-      }
       tableIndex.add(Map.of(
         "name", table.logicalName(),
-        "entity_ar", table.arabicSynonyms(),
-        "entity_en", table.englishSynonyms(),
-        "columns", compactColumns,
         "allowed_operations", table.allowedOperations()
       ));
     }
@@ -102,8 +88,6 @@ class SemanticCatalogService {
       }
       tables.add(Map.of(
         "name", table.logicalName(),
-        "entity_ar", table.arabicSynonyms(),
-        "entity_en", table.englishSynonyms(),
         "columns", columns,
         "allowed_operations", table.allowedOperations()
       ));
