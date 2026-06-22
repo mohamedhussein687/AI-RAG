@@ -191,6 +191,7 @@ class DecisionService:
                     plan["order_by"]["column"] = plan["order_by"].pop("field")
                 limit_value = plan.get("limit") or request.rules.max_rows
                 plan["limit"] = min(int(limit_value), 20)
+                self._normalize_structured_plan(plan, understanding_message)
                 log.info(
                     "agent_decision route=database_query intent=llm_structured selected_table=%s operation=%s reason=qwen_plan",
                     plan.get("table"),
@@ -293,6 +294,27 @@ class DecisionService:
         if planned.get("type") == "tool_calls":
             planned["final_answer_instruction"] = self._instruction(prefer_arabic(request.message, request.locale))
         return planned
+
+    def _normalize_structured_plan(self, plan: dict, message: str) -> None:
+        table = str(plan.get("table") or "")
+        operation = str(plan.get("operation") or "")
+        columns = [str(column) for column in plan.get("columns") or [] if column]
+        if columns and not plan.get("fields"):
+            plan["fields"] = columns
+
+        if table == "clients":
+            plan.setdefault("entities", ["clients"])
+            if operation == "count":
+                plan.setdefault("intent", "count_clients")
+            elif operation in {"list", "select"}:
+                if self._client_name_request(message) and not columns:
+                    plan["columns"] = ["name"]
+                    plan["fields"] = ["name"]
+                plan.setdefault("intent", "list_clients")
+
+    def _client_name_request(self, message: str) -> bool:
+        text = self._normalize(message)
+        return any(ArabicNormalizer.contains_term(text, term) for term in ("اسم", "اسماء", "الاسماء", "name", "names"))
 
     def _message_for_understanding(self, request: AgentDecideRequest) -> str:
         if not self._is_vague_follow_up(request.message):
