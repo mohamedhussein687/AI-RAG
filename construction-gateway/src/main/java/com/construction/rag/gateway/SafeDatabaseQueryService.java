@@ -17,6 +17,11 @@ class SafeDatabaseQueryService {
   private static final Map<String, TableAllowlist> GLOBAL_ALLOWLIST = Map.of(
     "projects", new TableAllowlist(List.of("id", "name", "status"), List.of("count"))
   );
+  private static final Map<String, Map<String, TableMapping>> CLIENT_MAPPINGS = Map.of(
+    "orbit", Map.of(
+      "projects", new TableMapping("projects", Map.of("status", "project_status"))
+    )
+  );
 
   private final ClientDataSourceManager dataSources;
 
@@ -38,13 +43,14 @@ class SafeDatabaseQueryService {
     if (!"count".equals(operation)) throw new IllegalArgumentException("unsupported operation");
 
     List<?> filters = plan.get("filters") instanceof List<?> list ? list : List.of();
+    TableMapping mapping = tableMapping(client, table);
     List<Object> params = new ArrayList<>();
-    String where = buildWhere(filters, allowlist, params);
-    String sql = "select count(*) as count from " + table + where;
+    String where = buildWhere(filters, allowlist, mapping, params);
+    String sql = "select count(*) as count from " + mapping.physicalTable() + where;
     DataSource dataSource = dataSources.dataSource(client);
     try (Connection connection = dataSource.getConnection()) {
       connection.setReadOnly(true);
-      validateActualSchema(connection, table, filters);
+      validateActualSchema(connection, table, mapping, filters);
       try (PreparedStatement statement = connection.prepareStatement(sql)) {
         statement.setQueryTimeout(10);
         for (int i = 0; i < params.size(); i++) statement.setObject(i + 1, params.get(i));
@@ -56,20 +62,21 @@ class SafeDatabaseQueryService {
     }
   }
 
-  private void validateActualSchema(Connection connection, String table, List<?> filters) throws Exception {
-    try (ResultSet tables = connection.getMetaData().getTables(connection.getCatalog(), null, table, new String[]{"TABLE"})) {
-      if (!tables.next()) throw new IllegalArgumentException("client database table missing: " + table);
+  private void validateActualSchema(Connection connection, String logicalTable, TableMapping mapping, List<?> filters) throws Exception {
+    try (ResultSet tables = connection.getMetaData().getTables(connection.getCatalog(), null, mapping.physicalTable(), new String[]{"TABLE"})) {
+      if (!tables.next()) throw new IllegalArgumentException("client database table missing: " + mapping.physicalTable());
     }
     for (Object item : filters) {
       Map<?, ?> filter = requireMap(item, "filter");
       String column = identifier(filter.get("column"));
-      try (ResultSet columns = connection.getMetaData().getColumns(connection.getCatalog(), null, table, column)) {
-        if (!columns.next()) throw new IllegalArgumentException("client database column missing: " + table + "." + column);
+      String physicalColumn = mapping.physicalColumn(column);
+      try (ResultSet columns = connection.getMetaData().getColumns(connection.getCatalog(), null, mapping.physicalTable(), physicalColumn)) {
+        if (!columns.next()) throw new IllegalArgumentException("client database column missing: " + logicalTable + "." + column + " mapped to " + mapping.physicalTable() + "." + physicalColumn);
       }
     }
   }
 
-  private String buildWhere(List<?> filters, TableAllowlist allowlist, List<Object> params) {
+  private String buildWhere(List<?> filters, TableAllowlist allowlist, TableMapping mapping, List<Object> params) {
     if (filters.isEmpty()) return "";
     List<String> clauses = new ArrayList<>();
     for (Object item : filters) {
@@ -78,10 +85,16 @@ class SafeDatabaseQueryService {
       if (!allowlist.columns().contains(column)) throw new IllegalArgumentException("filter column is not allowlisted");
       String operator = string(filter.get("operator"));
       if (!"eq".equals(operator)) throw new IllegalArgumentException("filter operator is not allowlisted");
-      clauses.add(column + " = ?");
+      clauses.add(mapping.physicalColumn(column) + " = ?");
       params.add(filter.get("value"));
     }
     return " where " + String.join(" and ", clauses);
+  }
+
+  private TableMapping tableMapping(RagClient client, String logicalTable) {
+    TableMapping defaultMapping = new TableMapping(logicalTable, Map.of());
+    Map<String, TableMapping> clientTables = CLIENT_MAPPINGS.getOrDefault(client.clientName().toLowerCase(Locale.ROOT), Map.of());
+    return clientTables.getOrDefault(logicalTable, defaultMapping);
   }
 
   private static Map<?, ?> requireMap(Object value, String name) {
@@ -101,4 +114,18 @@ class SafeDatabaseQueryService {
   }
 
   private record TableAllowlist(List<String> columns, List<String> operations) {}
+  private record TableMapping(String physicalTable, Map<String, String> columns) {
+    private TableMapping {
+      physicalTable = identifier(physicalTable);
+      columns = Map.copyOf(columns);
+      for (Map.Entry<String, String> entry : columns.entrySet()) {
+        identifier(entry.getKey());
+        identifier(entry.getValue());
+      }
+    }
+
+    String physicalColumn(String logicalColumn) {
+      return columns.getOrDefault(logicalColumn, logicalColumn);
+    }
+  }
 }
