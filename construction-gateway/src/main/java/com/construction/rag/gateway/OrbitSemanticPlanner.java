@@ -48,6 +48,7 @@ class OrbitSemanticPlanner {
       List<Map<String, Object>> filters = new ArrayList<>();
       CatalogColumn status = preferredColumn(table, "status", "project_status", "invoice_status");
       String statusValue = statusValue(text, status);
+      if (mentionsStatusLabel(text) && statusValue == null) return Optional.empty();
       if (statusValue != null && status != null) filters.add(filter(status.logicalName(), "eq", statusValue));
       filters.addAll(monthFilterIfRequested(text, table));
       return Optional.of(tool("count", table.logicalName(), null, filters, null, null, 20));
@@ -91,6 +92,11 @@ class OrbitSemanticPlanner {
     if (text.contains("غير مدفوعة") || text.contains("غير مدفوع") || text.contains("unpaid")) return "unpaid";
     if (text.contains("paid") || text.contains("مدفوعة") || text.contains("مدفوع")) return "paid";
     return null;
+  }
+
+  private boolean mentionsStatusLabel(String text) {
+    return text.contains("waiting") || text.contains("active") || text.contains("unpaid") || text.contains("paid")
+      || text.contains("غير مدفوعة") || text.contains("غير مدفوع") || text.contains("مدفوعة") || text.contains("مدفوع");
   }
 
   private List<Map<String, Object>> monthFilterIfRequested(String text, CatalogTable table) {

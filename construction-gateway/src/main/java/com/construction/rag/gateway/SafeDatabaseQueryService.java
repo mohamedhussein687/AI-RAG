@@ -147,10 +147,12 @@ class SafeDatabaseQueryService {
       Object value = filter.get("value");
       switch (operator) {
         case "eq" -> {
+          validateValueType(column, value);
           clauses.add(column.physicalName() + " = ?");
           params.add(value);
         }
         case "ne" -> {
+          validateValueType(column, value);
           clauses.add(column.physicalName() + " <> ?");
           params.add(value);
         }
@@ -178,6 +180,16 @@ class SafeDatabaseQueryService {
       case "lte" -> "<=";
       default -> throw new IllegalArgumentException("filter operator is not allowlisted");
     };
+  }
+
+  private void validateValueType(CatalogColumn column, Object value) {
+    if ("number".equals(column.fieldType()) && !(value instanceof Number)) {
+      try {
+        Double.parseDouble(String.valueOf(value));
+      } catch (Exception ex) {
+        throw new IllegalArgumentException("filter value is not compatible with numeric column: " + column.logicalName());
+      }
+    }
   }
 
   private CatalogColumn requiredColumn(CatalogTable table, Object value, String name) {

@@ -272,7 +272,7 @@ class SemanticCatalogService {
   private static List<String> operations(String dbType, boolean sensitive) {
     if (sensitive) return List.of();
     String type = fieldType(dbType);
-    if ("number".equals(type)) return List.of("filter", "sort", "sum", "avg", "min", "max");
+    if ("number".equals(type)) return List.of("filter", "sort", "group", "sum", "avg", "min", "max");
     if ("date".equals(type)) return List.of("filter", "sort", "group");
     return List.of("filter", "sort", "group");
   }
@@ -287,7 +287,9 @@ class SemanticCatalogService {
 
   private static List<String> enumValues(Connection c, String table, ColumnSource column) {
     if (!safeIdentifier(table) || !safeIdentifier(column.name())) return List.of();
-    if (!"string".equals(fieldType(column.type())) || sensitive(column.name())) return List.of();
+    String fieldType = fieldType(column.type());
+    if (sensitive(column.name())) return List.of();
+    if (!"string".equals(fieldType) && !("number".equals(fieldType) && (column.name().contains("status") || column.name().contains("type")))) return List.of();
     try (Statement s = c.createStatement();
          ResultSet rs = s.executeQuery("select count(distinct " + column.name() + ") from " + table + " where " + column.name() + " is not null")) {
       if (!rs.next() || rs.getLong(1) > 30) return List.of();
