@@ -6,6 +6,9 @@ from .normalization import ArabicNormalizer
 
 class SchemaAwarePlanner:
     PROJECT_TERMS = ("مشروع", "مشاريع", "مشروعات", "project", "projects")
+    CLIENT_TERMS = ("عميل", "عملاء", "العملاء", "client", "clients", "customer", "customers")
+    LIST_TERMS = ("اعرض", "عرض", "هات", "وريني", "اظهر", "show", "list", "display")
+    NAME_TERMS = ("اسم", "اسماء", "الاسماء", "name", "names")
     COUNT_TERMS = ("كم", "عدد", "how many", "count", "total")
     LATEST_TERMS = ("اخر", "آخر", "latest", "last", "newest")
     ADDED_TERMS = ("اضافته", "مضاف", "added", "created")
@@ -19,6 +22,8 @@ class SchemaAwarePlanner:
 
     def plan(self, message: str, catalog: dict[str, Any], max_rows: int) -> dict[str, Any] | None:
         text = ArabicNormalizer.normalize(message)
+        if self._is_client_question(text):
+            return self._client_plan(text, catalog, max_rows)
         if not self._is_project_question(text):
             return None
         project = self._project_entity(catalog)
@@ -35,6 +40,18 @@ class SchemaAwarePlanner:
         status = self._status_filter_value(text)
         if status:
             return self._status_list_plan(status, project, max_rows)
+        return None
+
+    def _client_plan(self, text: str, catalog: dict[str, Any], max_rows: int) -> dict[str, Any] | None:
+        table = self._table(catalog, "clients")
+        if not table:
+            return None
+        if self._is_count(text):
+            return self._tool_plan("count_clients", "count", "clients", limit=min(max_rows, 20))
+        if self._is_list(text) or any(ArabicNormalizer.contains_term(text, term) for term in self.NAME_TERMS):
+            name_column = self._first_column(table, ("name", "client_name", "title", "full_name"))
+            columns = [name_column] if name_column else []
+            return self._tool_plan("list_clients", "list", "clients", columns=columns, limit=min(max_rows, 20), extra={"entities": ["clients"], "fields": columns})
         return None
 
     def _count_plan(self, text: str, project: dict[str, Any], max_rows: int) -> dict[str, Any]:
@@ -126,6 +143,12 @@ class SchemaAwarePlanner:
             limit=min(max_rows, 20),
         )
 
+    def _is_client_question(self, text: str) -> bool:
+        return any(ArabicNormalizer.contains_term(text, term) for term in self.CLIENT_TERMS)
+
+    def _is_list(self, text: str) -> bool:
+        return any(ArabicNormalizer.contains_term(text, term) for term in self.LIST_TERMS)
+
     def _tool_plan(self, intent: str, operation: str, table: str, *, columns=None, filters=None, order_by=None, limit=20, extra=None) -> dict[str, Any]:
         plan = {
             "intent": intent,
@@ -161,6 +184,29 @@ class SchemaAwarePlanner:
         for entity in catalog.get("domain_entities", []):
             if entity.get("entity") == "projects" and entity.get("table") == "projects":
                 return entity
+        return None
+
+    def _table(self, catalog: dict[str, Any], name: str) -> dict[str, Any] | None:
+        for table in catalog.get("tables", []):
+            if table.get("name") == name:
+                return table
+        for table in catalog.get("tables_index", []):
+            if table.get("name") == name:
+                return table
+        return None
+
+    @staticmethod
+    def _first_column(table: dict[str, Any], names: tuple[str, ...]) -> str | None:
+        raw_columns = table.get("columns", [])
+        columns = []
+        for column in raw_columns:
+            if isinstance(column, dict):
+                columns.append(str(column.get("name", "")))
+            else:
+                columns.append(str(column))
+        for name in names:
+            if name in columns:
+                return name
         return None
 
     @staticmethod

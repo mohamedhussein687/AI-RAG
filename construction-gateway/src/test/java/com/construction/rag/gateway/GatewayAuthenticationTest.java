@@ -221,6 +221,72 @@ class GatewayAuthenticationTest {
   }
 
   @Test
+  void apiKeyClientListRequestMustRemainDatabaseQuery() throws Exception {
+    try (MockWebServer ai = new MockWebServer()) {
+      ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("""
+        {"type":"tool_calls","route":"database_query","requires_database":true,"requires_rag":false,"tool_calls":[{"id":"db_1","tool":"database_query","plan":{"intent":"list_clients","entities":["clients"],"operation":"list","table":"clients","columns":["name"],"fields":["name"],"filters":[],"limit":20}}],"local_rag_results":[],"final_answer_instruction":"Answer in Arabic."}
+        """));
+      ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("""
+        {"answer":"هؤلاء هم العملاء المتاحون.","display":{"type":"table","data":{"tool_results":[{"rows":[{"name":"Client A"}]}],"citations_valid":true}},"sources":[]}
+        """));
+      ai.start(InetAddress.getByName("127.0.0.1"), 0);
+      SafeDatabaseQueryService db = Mockito.mock(SafeDatabaseQueryService.class);
+      Mockito.when(db.execute(Mockito.any(), Mockito.any())).thenReturn(Mono.just(Map.of("operation", "list", "table", "clients", "rows", List.of(Map.of("name", "Client A")))));
+      SemanticCatalogService catalogs = Mockito.mock(SemanticCatalogService.class);
+      SemanticCatalog catalog = catalog();
+      Mockito.when(catalogs.catalog(Mockito.any())).thenReturn(catalog);
+      Mockito.when(catalogs.allowedSchema(catalog)).thenReturn(Map.of("tables", List.of(Map.of("name", "clients", "columns", List.of("name"), "allowed_operations", List.of("list")))));
+      Mockito.when(catalogs.promptSummary(catalog)).thenReturn(Map.of("tables_index", List.of(Map.of("name", "clients")), "tables", List.of(Map.of("name", "clients", "columns", List.of(Map.of("name", "name"))))));
+      RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props(ai.url("/").toString(), "internal-ai-token")), db, catalogs, null);
+      ServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/api/chat").header("X-API-Key", "redacted").build());
+      exchange.getAttributes().put(ApiKeyClientFilter.RAG_CLIENT_ATTR, new RagClient(7, "orbit", "mysql", "db", 3306, "orbit", "user", "encrypted", "active"));
+
+      Object response = controller.chat(Map.of("message", "اعرض جميع اسماء العملاء"), exchange).block();
+      RecordedRequest decide = ai.takeRequest(2, TimeUnit.SECONDS);
+
+      assertThat(((Map<?, ?>) response).get("answer")).isEqualTo("هؤلاء هم العملاء المتاحون.");
+      JsonNode decideBody = JSON.readTree(decide.getBody().readUtf8());
+      assertThat(decideBody.get("message").asText()).isEqualTo("اعرض جميع اسماء العملاء");
+      assertThat(decideBody.get("conversation_history")).isNotNull();
+      Mockito.verify(db).execute(Mockito.any(), Mockito.argThat(call -> "clients".equals(((Map<?, ?>) call.get("plan")).get("table"))));
+    }
+  }
+
+  @Test
+  void apiKeyFollowUpPassesConversationHistoryToAiModule() throws Exception {
+    try (MockWebServer ai = new MockWebServer()) {
+      ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("""
+        {"type":"tool_calls","route":"database_query","requires_database":true,"requires_rag":false,"tool_calls":[{"id":"db_1","tool":"database_query","plan":{"intent":"list_clients","entities":["clients"],"operation":"list","table":"clients","columns":["name"],"fields":["name"],"filters":[],"limit":20}}],"local_rag_results":[],"final_answer_instruction":"Answer in Arabic."}
+        """));
+      ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("""
+        {"answer":"تم عرض العملاء.","display":{"type":"table","data":{"tool_results":[{"rows":[{"name":"Client A"}]}],"citations_valid":true}},"sources":[]}
+        """));
+      ai.start(InetAddress.getByName("127.0.0.1"), 0);
+      SafeDatabaseQueryService db = Mockito.mock(SafeDatabaseQueryService.class);
+      Mockito.when(db.execute(Mockito.any(), Mockito.any())).thenReturn(Mono.just(Map.of("operation", "list", "table", "clients", "rows", List.of(Map.of("name", "Client A")))));
+      SemanticCatalogService catalogs = Mockito.mock(SemanticCatalogService.class);
+      SemanticCatalog catalog = catalog();
+      Mockito.when(catalogs.catalog(Mockito.any())).thenReturn(catalog);
+      Mockito.when(catalogs.allowedSchema(catalog)).thenReturn(Map.of("tables", List.of(Map.of("name", "clients", "columns", List.of("name"), "allowed_operations", List.of("list")))));
+      Mockito.when(catalogs.promptSummary(catalog)).thenReturn(Map.of("tables_index", List.of(Map.of("name", "clients")), "tables", List.of(Map.of("name", "clients", "columns", List.of(Map.of("name", "name"))))));
+      RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props(ai.url("/").toString(), "internal-ai-token")), db, catalogs, null);
+      ServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/api/chat").header("X-API-Key", "redacted").build());
+      exchange.getAttributes().put(ApiKeyClientFilter.RAG_CLIENT_ATTR, new RagClient(7, "orbit", "mysql", "db", 3306, "orbit", "user", "encrypted", "active"));
+
+      controller.chat(Map.of(
+        "message", "اريد عرضهم جميعا",
+        "conversation_history", List.of(Map.of("role", "user", "content", "اعرض جميع اسماء العملاء"))
+      ), exchange).block();
+      RecordedRequest decide = ai.takeRequest(2, TimeUnit.SECONDS);
+
+      JsonNode decideBody = JSON.readTree(decide.getBody().readUtf8());
+      assertThat(decideBody.get("message").asText()).isEqualTo("اريد عرضهم جميعا");
+      assertThat(decideBody.get("conversation_history").get(0).get("content").asText()).isEqualTo("اعرض جميع اسماء العملاء");
+      Mockito.verify(db).execute(Mockito.any(), Mockito.argThat(call -> "clients".equals(((Map<?, ?>) call.get("plan")).get("table"))));
+    }
+  }
+
+  @Test
   void catalogPromptExcludesDisabledCmsTablesAndIncludesProjectDomainMapping() {
     org.springframework.jdbc.core.JdbcTemplate jdbc = Mockito.mock(org.springframework.jdbc.core.JdbcTemplate.class);
     SemanticCatalogService service = new SemanticCatalogService(jdbc, null, JSON);

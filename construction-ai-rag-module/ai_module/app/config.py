@@ -8,6 +8,7 @@ class Settings(BaseSettings):
 
     app_env: str = Field(default="development", alias="APP_ENV")
     production_mode: bool = Field(default=False, alias="PRODUCTION_MODE")
+    release_sha: str = Field(default="dev", alias="RELEASE_SHA")
 
     ai_module_token: str = Field(default="change-me", alias="AI_MODULE_TOKEN")
     spring_gateway_base_url: str = Field(default="", alias="SPRING_GATEWAY_BASE_URL")

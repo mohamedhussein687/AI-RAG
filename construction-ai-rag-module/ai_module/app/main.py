@@ -51,7 +51,7 @@ async def dependency_health(settings: Settings) -> dict[str, str]:
 async def health(settings: Settings = Depends(get_settings)):
     deps = await dependency_health(settings)
     status = "ok" if all(v in {"ok", "disabled"} for v in deps.values()) else "degraded"
-    return HealthResponse(status=status, dependencies=deps)
+    return HealthResponse(status=status, dependencies=deps, version=settings.release_sha)
 
 
 @app.get("/health/live")
@@ -64,7 +64,7 @@ async def ready(settings: Settings = Depends(get_settings)):
     deps = await dependency_health(settings)
     acceptable = {"ok"} if settings.production_mode else {"ok", "disabled"}
     status = "ok" if all(v in acceptable for v in deps.values()) else "degraded"
-    return HealthResponse(status=status, dependencies=deps)
+    return HealthResponse(status=status, dependencies=deps, version=settings.release_sha)
 
 
 @app.post("/api/agent/decide", dependencies=[Depends(require_module_token)])

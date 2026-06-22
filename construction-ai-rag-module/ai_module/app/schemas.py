@@ -3,7 +3,17 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 DisplayType = Literal["text", "metric", "table", "answer_with_sources", "mixed", "clarification"]
 DbOperation = Literal["count", "list", "select", "details", "sum", "avg", "min", "max", "group_count"]
-DecisionRoute = Literal["conversational", "database_query", "rag_search", "unsupported", "clarification", "forbidden"]
+DecisionRoute = Literal[
+    "conversational",
+    "database_query",
+    "rag_search",
+    "hybrid",
+    "direct_answer",
+    "unsupported",
+    "clarification",
+    "clarification_needed",
+    "forbidden",
+]
 
 
 class StrictModel(BaseModel):
@@ -90,10 +100,12 @@ class OrderBy(StrictModel):
 
 class DatabaseQueryPlan(StrictModel):
     intent: str | None = None
+    entities: list[str] = Field(default_factory=list)
     operation: DbOperation
     table: str
     column: str | None = None
     columns: list[str] = Field(default_factory=list)
+    fields: list[str] = Field(default_factory=list)
     lookup_value: str | None = None
     lookup_fields: list[str] = Field(default_factory=list)
     filters: list[DatabaseFilter] = Field(default_factory=list)
@@ -237,6 +249,7 @@ class RagSearchResponse(StrictModel):
 class HealthResponse(StrictModel):
     status: Literal["ok", "degraded"]
     dependencies: dict[str, Literal["ok", "disabled", "error"]]
+    version: str = "dev"
 
 
 def contains_forbidden_keys(value: Any) -> bool:
