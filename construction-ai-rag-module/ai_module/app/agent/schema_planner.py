@@ -1,0 +1,236 @@
+import re
+from typing import Any
+
+from .normalization import ArabicNormalizer
+
+
+class SchemaAwarePlanner:
+    PROJECT_TERMS = ("مشروع", "مشاريع", "مشروعات", "project", "projects")
+    COUNT_TERMS = ("كم", "عدد", "how many", "count", "total")
+    LATEST_TERMS = ("اخر", "آخر", "latest", "last", "newest")
+    ADDED_TERMS = ("اضافته", "مضاف", "added", "created")
+    DETAIL_TERMS = ("معلومات", "تفاصيل", "بيانات", "details", "detail", "info", "information", "data")
+    CODE_TERMS = ("صاحب الكود", "بالكود", "كود المشروع", "رقم المشروع", "project code")
+    DELAY_TERMS = ("متاخر", "متاخرين", "متاخره", "تاخير", "delayed", "late")
+    DELIVERY_TERMS = ("تسليم", "delivery", "deadline", "end date")
+    ACTIVE_TERMS = ("نشط", "نشطه", "نشطة", "نشطين", "active")
+    STOPPED_TERMS = ("متوقف", "متوقفه", "متوقفة", "stopped", "paused")
+    FINISHED_TERMS = ("منتهي", "منتهيه", "منتهية", "completed", "delivered", "finished")
+
+    def plan(self, message: str, catalog: dict[str, Any], max_rows: int) -> dict[str, Any] | None:
+        text = ArabicNormalizer.normalize(message)
+        if not self._is_project_question(text):
+            return None
+        project = self._project_entity(catalog)
+        if not project or project.get("table") != "projects":
+            return None
+        if self._is_delayed(text):
+            return self._delayed_plan(text, project, max_rows)
+        if self._is_latest(text):
+            return self._latest_plan(project)
+        if self._is_details(text):
+            return self._details_plan(message, text, project)
+        if self._is_count(text):
+            return self._count_plan(text, project, max_rows)
+        status = self._status_filter_value(text)
+        if status:
+            return self._status_list_plan(status, project, max_rows)
+        return None
+
+    def _count_plan(self, text: str, project: dict[str, Any], max_rows: int) -> dict[str, Any]:
+        filters = []
+        status = self._status_filter_value(text)
+        status_field = self._status_field(project)
+        if status and status_field:
+            filters.append({"column": status_field, "operator": "eq", "value": status})
+        return self._tool_plan("project_count", "count", project["table"], filters=filters, limit=min(max_rows, 20))
+
+    def _latest_plan(self, project: dict[str, Any]) -> dict[str, Any]:
+        latest = self._report(project, "latest_project")
+        if not latest or not latest.get("enabled"):
+            missing = latest.get("missing_fields", ["created_at_or_sequential_id"]) if isinstance(latest, dict) else ["latest_project"]
+            return self._configuration_error("لا يوجد حقل مناسب لتحديد آخر مشروع تم إضافته.", missing)
+        return self._tool_plan(
+            "latest_project",
+            "select",
+            latest["table"],
+            columns=latest.get("display_fields", []),
+            order_by={"column": latest["order_field"], "direction": "desc"},
+            limit=1,
+        )
+
+    def _details_plan(self, message: str, text: str, project: dict[str, Any]) -> dict[str, Any] | None:
+        details = self._report(project, "project_details")
+        if not details or not details.get("enabled"):
+            missing = details.get("missing_fields", ["project_details"]) if isinstance(details, dict) else ["project_details"]
+            return self._configuration_error("لا أستطيع جلب تفاصيل المشروع لأن خريطة البيانات ناقصة.", missing)
+        code = self._project_code(message)
+        if code:
+            code_fields = [field for field in details.get("code_fields", []) if isinstance(field, str)]
+            if not code_fields:
+                return self._configuration_error("لا يوجد حقل كود للمشاريع في الـ schema الحالية.", ["project_code"])
+            return self._tool_plan(
+                "project_details",
+                "details",
+                details["table"],
+                columns=details.get("display_fields", []),
+                filters=[{"column": code_fields[0], "operator": "code_equals_normalized", "value": code}],
+                limit=1,
+            )
+        value = self._project_lookup_value(message)
+        if not value:
+            return None
+        return self._tool_plan(
+            "project_details",
+            "details",
+            details["table"],
+            columns=details.get("display_fields", []),
+            limit=1,
+            extra={"lookup_value": value, "lookup_fields": details.get("lookup_fields", [])},
+        )
+
+    def _delayed_plan(self, text: str, project: dict[str, Any], max_rows: int) -> dict[str, Any]:
+        report = self._report(project, "delayed_projects_report")
+        if not report or not report.get("enabled"):
+            missing = report.get("missing_fields", ["delayed_projects_report"]) if isinstance(report, dict) else ["delayed_projects_report"]
+            return self._configuration_error("لا أستطيع حساب المشاريع المتأخرة لأن حقول التأخير غير مكتملة في خريطة البيانات.", missing)
+        operation = "count" if self._is_count(text) and not self._requested_limit(text) else "select"
+        filters = [
+            {"column": report["deadline_field"], "operator": "lt", "value": "today"},
+            {"column": report["completion_field"], "operator": "not_completed", "value": False},
+        ]
+        if operation == "count":
+            return self._tool_plan("delayed_projects_count", "count", report["table"], filters=filters, limit=min(max_rows, 20))
+        return self._tool_plan(
+            "delayed_projects_report",
+            "select",
+            report["table"],
+            columns=list(dict.fromkeys([report.get("title_field"), report.get("status_field"), report.get("deadline_field"), report.get("completion_field"), "actual_delivery_date", report.get("order_field")])),
+            filters=filters,
+            order_by={"column": report["order_field"], "direction": "desc"},
+            limit=self._requested_limit(text) or int(report.get("default_limit", 4)),
+        )
+
+    def _status_list_plan(self, status: str, project: dict[str, Any], max_rows: int) -> dict[str, Any] | None:
+        status_field = self._status_field(project)
+        details = self._report(project, "project_details") or {}
+        if not status_field:
+            return self._configuration_error("لا يوجد حقل حالة للمشاريع في خريطة البيانات الحالية.", ["status"])
+        columns = details.get("display_fields", [])
+        return self._tool_plan(
+            "project_status_list",
+            "select",
+            project["table"],
+            columns=columns,
+            filters=[{"column": status_field, "operator": "eq", "value": status}],
+            limit=min(max_rows, 20),
+        )
+
+    def _tool_plan(self, intent: str, operation: str, table: str, *, columns=None, filters=None, order_by=None, limit=20, extra=None) -> dict[str, Any]:
+        plan = {
+            "intent": intent,
+            "operation": operation,
+            "table": table,
+            "columns": [c for c in (columns or []) if c],
+            "filters": filters or [],
+            "limit": min(max(int(limit), 1), 20),
+        }
+        if order_by:
+            plan["order_by"] = order_by
+        if extra:
+            plan.update(extra)
+        return {
+            "type": "tool_calls",
+            "intent": intent,
+            "reason": "schema_aware_planner",
+            "tool_calls": [{"id": "db_1", "tool": "database_query", "plan": plan}],
+            "local_rag_results": [],
+        }
+
+    @staticmethod
+    def _configuration_error(answer: str, missing: list[Any]) -> dict[str, Any]:
+        return {
+            "type": "unsupported",
+            "route": "unsupported",
+            "intent": "configuration_error",
+            "reason": "missing_schema_mapping",
+            "answer": answer + (" الحقول الناقصة: " + ", ".join(map(str, missing)) if missing else ""),
+        }
+
+    def _project_entity(self, catalog: dict[str, Any]) -> dict[str, Any] | None:
+        for entity in catalog.get("domain_entities", []):
+            if entity.get("entity") == "projects" and entity.get("table") == "projects":
+                return entity
+        return None
+
+    @staticmethod
+    def _report(project: dict[str, Any], name: str) -> dict[str, Any] | None:
+        value = project.get(name)
+        return value if isinstance(value, dict) else None
+
+    def _status_field(self, project: dict[str, Any]) -> str | None:
+        report = self._report(project, "delayed_projects_report")
+        if report and report.get("status_field"):
+            return str(report["status_field"])
+        return None
+
+    def _status_filter_value(self, text: str) -> str | None:
+        if any(ArabicNormalizer.contains_term(text, term) for term in self.ACTIVE_TERMS):
+            return "active"
+        if any(ArabicNormalizer.contains_term(text, term) for term in self.STOPPED_TERMS):
+            return "stopped"
+        if any(ArabicNormalizer.contains_term(text, term) for term in self.FINISHED_TERMS):
+            return "completed"
+        return None
+
+    def _is_project_question(self, text: str) -> bool:
+        return any(ArabicNormalizer.contains_term(text, term) for term in self.PROJECT_TERMS)
+
+    def _is_count(self, text: str) -> bool:
+        return any(ArabicNormalizer.contains_term(text, term) for term in self.COUNT_TERMS)
+
+    def _is_latest(self, text: str) -> bool:
+        return any(ArabicNormalizer.contains_term(text, term) for term in self.LATEST_TERMS) and (
+            any(ArabicNormalizer.contains_term(text, term) for term in self.ADDED_TERMS) or "latest" in text or "last" in text
+        )
+
+    def _is_details(self, text: str) -> bool:
+        return any(ArabicNormalizer.contains_term(text, term) for term in self.DETAIL_TERMS + self.CODE_TERMS)
+
+    def _is_delayed(self, text: str) -> bool:
+        return any(ArabicNormalizer.contains_term(text, term) for term in self.DELAY_TERMS) and (
+            any(ArabicNormalizer.contains_term(text, term) for term in self.DELIVERY_TERMS) or self._is_count(text) or self._requested_limit(text)
+        )
+
+    def _requested_limit(self, text: str) -> int | None:
+        match = re.search(r"\b([1-9][0-9]?)\b", text)
+        if match:
+            return min(int(match.group(1)), 20)
+        if "اربع" in text or "اربعه" in text:
+            return 4
+        return None
+
+    def _project_lookup_value(self, message: str) -> str | None:
+        cleaned = re.sub(r"[؟?؛،,]", " ", message).strip()
+        for pattern in (r"(?:المشروع|مشروع|project)\s+([A-Za-z0-9_-]{2,80})", r"([A-Za-z]+[0-9][A-Za-z0-9_-]{1,80})"):
+            match = re.search(pattern, cleaned, re.IGNORECASE)
+            if match:
+                return match.group(1)
+        return None
+
+    def _project_code(self, message: str) -> str | None:
+        text = ArabicNormalizer.normalize(message)
+        if not any(ArabicNormalizer.contains_term(text, term) for term in self.CODE_TERMS):
+            return None
+        pattern = r"([A-Za-z][A-Za-z0-9]*(?:\s*[-–—]\s*[A-Za-z0-9]+){2,})"
+        match = re.search(pattern, message, re.IGNORECASE)
+        if not match:
+            match = re.search(r"([A-Za-z0-9]{2,}(?:[\s_-]+[A-Za-z0-9]{2,}){1,})", message, re.IGNORECASE)
+        if not match:
+            return None
+        raw = match.group(1).strip()
+        code = re.sub(r"\s*[-–—]\s*", "-", raw)
+        code = re.sub(r"\s+", "-", code).strip("-").lower()
+        if not re.search(r"[a-z]", code) or not re.search(r"\d", code):
+            return None
+        return code

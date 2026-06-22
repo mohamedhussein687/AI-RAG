@@ -179,6 +179,9 @@ def test_conversational_messages_are_routed_without_database_or_llm(client, auth
     cases = {
         "شكرا": "العفو",
         "تمام": "تمام",
+        "انت كويس": "بخير",
+        "انت بخير": "بخير",
+        "عامل ايه": "بخير",
         "هل انت بخير؟": "بخير",
         "السلام عليكم": "وعليكم السلام",
         "مع السلامة": "مع السلامة",
@@ -195,12 +198,25 @@ def test_conversational_messages_are_routed_without_database_or_llm(client, auth
         assert expected in data["answer"]
 
 
+def test_unknown_messages_return_safe_unsupported_json(client, auth_headers, monkeypatch):
+    async def broken_chat_json(self, messages):
+        raise RuntimeError("qwen should not make normal inputs return 500")
+
+    monkeypatch.setattr(LlmClient, "chat_json", broken_chat_json)
+    for question in ["اعمل لي قهوة", "غني لي اغنية", "ما سعر الدولار اليوم"]:
+        response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload(question, semantic_catalog=project_catalog_with_cms_table()))
+        assert response.status_code == 200
+        data = response.json()
+        assert data["type"] == "unsupported"
+        assert data["route"] == "unsupported"
+
+
 def test_project_count_uses_authoritative_projects_table_not_about_us(client, auth_headers, monkeypatch):
     async def should_not_call_qwen(self, messages):
         raise AssertionError("project_count guard should run before LLM table selection")
 
     monkeypatch.setattr(LlmClient, "chat_json", should_not_call_qwen)
-    for question in ["كم عدد المشاريع؟", "عدد المشاريع"]:
+    for question in ["كم عدد المشاريع؟", "عدد المشاريع كام", "how many projects"]:
         response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload(question, semantic_catalog=project_catalog_with_cms_table()))
         assert response.status_code == 200
         data = response.json()
@@ -209,6 +225,33 @@ def test_project_count_uses_authoritative_projects_table_not_about_us(client, au
         assert plan["operation"] == "count"
         assert plan["table"] == "projects"
         assert plan["table"] != "about_us"
+
+
+def test_project_status_and_delayed_count_are_schema_aware(client, auth_headers, monkeypatch):
+    async def should_not_call_qwen(self, messages):
+        raise AssertionError("schema-aware project planner should run before LLM")
+
+    monkeypatch.setattr(LlmClient, "chat_json", should_not_call_qwen)
+    response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("المشاريع النشطة", semantic_catalog=project_catalog_with_cms_table()))
+    assert response.status_code == 200
+    data = response.json()
+    assert data["type"] == "tool_calls"
+    plan = data["tool_calls"][0]["plan"]
+    assert plan["intent"] == "project_status_list"
+    assert plan["operation"] == "select"
+    assert plan["table"] == "projects"
+    assert {"column": "status", "operator": "eq", "value": "active"} in plan["filters"]
+
+    response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("كم عدد المشاريع المتأخرة", semantic_catalog=project_catalog_with_cms_table()))
+    assert response.status_code == 200
+    data = response.json()
+    assert data["type"] == "tool_calls"
+    plan = data["tool_calls"][0]["plan"]
+    assert plan["intent"] == "delayed_projects_count"
+    assert plan["operation"] == "count"
+    assert plan["table"] == "projects"
+    assert {"column": "planned_delivery_date", "operator": "lt", "value": "today"} in plan["filters"]
+    assert {"column": "is_finished", "operator": "not_completed", "value": False} in plan["filters"]
 
 
 def test_delayed_projects_report_uses_projects_table_limit_and_latest_order(client, auth_headers, monkeypatch):
@@ -340,6 +383,20 @@ def test_latest_project_missing_mapping_returns_structured_unsupported_not_500(c
     data = response.json()
     assert data["type"] == "unsupported"
     assert "لا يوجد حقل مناسب" in data["answer"]
+
+
+def test_delayed_projects_missing_mapping_returns_configuration_error(client, auth_headers, monkeypatch):
+    async def should_not_call_qwen(self, messages):
+        raise AssertionError("missing delayed mapping should not fall through to LLM")
+
+    monkeypatch.setattr(LlmClient, "chat_json", should_not_call_qwen)
+    catalog = project_catalog_with_cms_table()
+    catalog["domain_entities"][0]["delayed_projects_report"] = {"enabled": False, "missing_fields": ["planned_delivery_date", "is_finished"]}
+    response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("كم عدد المشاريع المتأخرة", semantic_catalog=catalog))
+    assert response.status_code == 200
+    data = response.json()
+    assert data["type"] == "unsupported"
+    assert "حقول التأخير" in data["answer"]
 
 
 def test_equivalent_invoice_questions_generate_same_plan(client, auth_headers, monkeypatch):

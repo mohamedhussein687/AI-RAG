@@ -8,31 +8,20 @@ from app.schemas import (
     UnsupportedDecision,
 )
 from .json_guard import validate_decision
+from .normalization import ArabicNormalizer
 from .prompt_builder import prefer_arabic
+from .routing import MessageRouter
+from .schema_planner import SchemaAwarePlanner
 from app.rag.retrieval_service import RetrievalService
 from app.schemas import RagSearchRequest, RagFilters
 from app.clients.llm_client import LlmClient
 import json
 import logging
-import re
 from pydantic import ValidationError
 
 SENSITIVE = ("password", "باسورد", "كلمة السر", "secret", "credential", "token")
 DOC_TERMS = ("إزاي", "how to", "policy", "سياسة", "procedure", "إجراء", "manual", "دليل", "contract", "عقد", "مستخلص")
 DELAY_TERMS = ("متأخر", "delayed", "delay")
-PROJECT_TERMS = ("مشروع", "مشاريع", "المشاريع", "project", "projects")
-COUNT_TERMS = ("كم", "عدد", "count", "how many", "total")
-DELAY_REPORT_TERMS = ("متاخر", "متاخرين", "متاخره", "تأخير", "تاخير", "delayed", "late")
-DELIVERY_TERMS = ("تسليم", "delivery", "deadline", "end date")
-PROJECT_DETAIL_TERMS = ("معلومات", "تفاصيل", "بيانات", "details", "detail", "info", "information", "data")
-CODE_INDICATOR_TERMS = ("صاحب الكود", "صاخب الكود", "بالكود", "كود المشروع", "رقم المشروع", "project code")
-LATEST_TERMS = ("اخر", "آخر", "latest", "last", "newest")
-ADDED_TERMS = ("اضافته", "اضافتة", "مضاف", "added", "created")
-THANKS_TERMS = ("شكرا", "شكرًا", "متشكر", "تسلم", "thanks", "thank you")
-OK_TERMS = ("تمام", "حاضر", "اوكي", "أوكي", "ok", "okay")
-GREETING_TERMS = ("السلام عليكم", "مرحبا", "اهلا", "أهلا", "hello", "hi")
-GOODBYE_TERMS = ("مع السلامه", "مع السلامة", "باي", "bye", "goodbye")
-WELLBEING_TERMS = ("هل انت بخير", "عامل ايه", "ازيك", "إزيك", "how are you")
 log = logging.getLogger(__name__)
 
 
@@ -41,6 +30,8 @@ class DecisionService:
         self.settings = settings
         self.retrieval = RetrievalService(settings)
         self.llm = LlmClient(settings)
+        self.router = MessageRouter()
+        self.schema_planner = SchemaAwarePlanner()
 
     async def decide(self, request: AgentDecideRequest):
         try:
@@ -51,11 +42,39 @@ class DecisionService:
     async def _decide_core(self, request: AgentDecideRequest):
         text = request.message.lower()
         arabic = prefer_arabic(request.message, request.locale)
-        conversational = self._conversational_guard(request)
-        if conversational:
-            return conversational
+        if any(term in text for term in SENSITIVE):
+            log.info("agent_decision route=forbidden intent=sensitive_data selected_table=none operation=none normalized_message=%s reason=sensitive_term", self._normalize(request.message)[:300])
+            return validate_decision(ForbiddenDecision(type="forbidden").model_dump())
+        route = self.router.route(request.message, self._has_database_catalog(request))
+        if route.route == "conversational":
+            log.info(
+                "agent_decision route=conversational intent=%s selected_table=none operation=none normalized_message=%s reason=message_router",
+                route.intent,
+                self._normalize(request.message)[:300],
+            )
+            return validate_decision(FinalAnswerDecision(type="final_answer", answer=route.answer, display=Display(type="text", data={"conversation_type": route.intent}), sources=[]).model_dump())
+        if route.route == "unsupported":
+            log.info(
+                "agent_decision route=unsupported intent=%s selected_table=none operation=none normalized_message=%s reason=message_router",
+                route.intent,
+                self._normalize(request.message)[:300],
+            )
+            return validate_decision(UnsupportedDecision(type="unsupported", answer=route.answer).model_dump())
+        if route.route == "clarification":
+            log.info(
+                "agent_decision route=clarification intent=%s selected_table=none operation=none normalized_message=%s reason=message_router",
+                route.intent,
+                self._normalize(request.message)[:300],
+            )
+            return validate_decision(ClarificationDecision(type="clarification", question=route.answer).model_dump())
+        if route.route == "rag_search":
+            normalized = self._normalize(request.message)
+            if any(term in normalized for term in ("متاخر", "تاخير", "delayed")) and ("سياسه" in normalized or "policy" in normalized):
+                log.info("agent_decision route=unsupported intent=mixed_policy_and_live_data selected_table=none operation=none normalized_message=%s reason=mixed_route_requires_separate_flow", normalized[:300])
+                return validate_decision(UnsupportedDecision(type="unsupported").model_dump())
+            return await self._rag_decision(request, arabic)
         if self._has_database_catalog(request):
-            guarded = self._deterministic_database_guard(request)
+            guarded = self._schema_database_plan(request)
             if guarded:
                 if guarded.get("type") == "tool_calls":
                     plan = guarded["tool_calls"][0]["plan"]
@@ -78,9 +97,6 @@ class DecisionService:
                 return validate_decision(guarded)
             return await self._qwen_database_decision(request, arabic)
 
-        if any(term in text for term in SENSITIVE):
-            return validate_decision(ForbiddenDecision(type="forbidden").model_dump())
-
         is_doc = any(term.lower() in text for term in DOC_TERMS)
         is_mixed = (any(t in text for t in DELAY_TERMS) and ("سياسة" in text or "policy" in text))
 
@@ -102,6 +118,17 @@ class DecisionService:
         question = "هل يمكنك توضيح البيانات أو المستندات المطلوبة؟" if arabic else "Can you clarify what data or documents you need?"
         return validate_decision(ClarificationDecision(type="clarification", question=question).model_dump())
 
+    async def _rag_decision(self, request: AgentDecideRequest, arabic: bool):
+        search = RagSearchRequest(query=request.message, user_context=request.user_context, top_k=self.settings.max_retrieved_chunks, filters=RagFilters())
+        local_results = (await self.retrieval.search(search)).results
+        if not local_results:
+            answer = "لم أجد مستندات ذات صلة متاحة لك." if arabic else "No relevant authorized documents were found."
+            log.info("agent_decision route=rag_search intent=document_or_policy selected_table=none operation=none result=no_authorized_chunks")
+            return validate_decision(FinalAnswerDecision(type="final_answer", answer=answer, display=Display(type="answer_with_sources"), sources=[], route="rag_search", requires_rag=True).model_dump())
+        answer = self._rag_answer(local_results, arabic)
+        log.info("agent_decision route=rag_search intent=document_or_policy selected_table=none operation=none result=chunks chunks=%s", len(local_results))
+        return validate_decision(FinalAnswerDecision(type="final_answer", answer=answer, display=Display(type="answer_with_sources", data={"chunks": len(local_results)}), sources=[c.source() for c in local_results], route="rag_search", requires_rag=True).model_dump())
+
     def _safe_decision_fallback(self, request: AgentDecideRequest, exc: Exception):
         normalized = self._normalize(request.message)
         log.exception(
@@ -111,58 +138,6 @@ class DecisionService:
         )
         answer = "لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."
         return validate_decision(UnsupportedDecision(type="unsupported", answer=answer).model_dump())
-
-    def _conversational_guard(self, request: AgentDecideRequest):
-        text = self._normalize(request.message)
-        answer = None
-        kind = None
-        if self._only_conversation(text, THANKS_TERMS):
-            kind = "thanks"
-            answer = "العفو، تحت أمرك."
-        elif self._only_conversation(text, GREETING_TERMS):
-            kind = "greeting"
-            answer = "وعليكم السلام، أهلاً بك. أقدر أساعدك في قراءة وتحليل بيانات مشروع ORBIT حسب الصلاحيات المتاحة."
-        elif self._only_conversation(text, OK_TERMS):
-            kind = "ack"
-            answer = "تمام، تحت أمرك."
-        elif self._only_conversation(text, GOODBYE_TERMS):
-            kind = "goodbye"
-            answer = "مع السلامة، تحت أمرك في أي وقت."
-        elif self._only_conversation(text, WELLBEING_TERMS):
-            kind = "wellbeing"
-            answer = "أنا بخير، وجاهز أساعدك في بيانات مشروع ORBIT."
-        if answer is None:
-            return None
-        log.info(
-            "agent_decision route=conversational intent=%s selected_table=none operation=none normalized_message=%s reason=conversation_route_guard",
-            kind,
-            text[:300],
-        )
-        return validate_decision(
-            FinalAnswerDecision(
-                type="final_answer",
-                answer=answer,
-                display=Display(type="text", data={"conversation_type": kind}),
-                sources=[],
-                route="conversational",
-                requires_database=False,
-                requires_rag=False,
-            ).model_dump()
-        )
-
-    def _only_conversation(self, text: str, terms: tuple[str, ...]) -> bool:
-        if not any(self._normalize(term) in text for term in terms):
-            return False
-        business_markers = PROJECT_TERMS + COUNT_TERMS + PROJECT_DETAIL_TERMS + DELAY_REPORT_TERMS + DELIVERY_TERMS + DOC_TERMS
-        return not any(self._contains_normalized_term(text, term) for term in business_markers)
-
-    def _contains_normalized_term(self, text: str, term: str) -> bool:
-        normalized = self._normalize(term).strip()
-        if not normalized:
-            return False
-        if len(normalized) <= 2 or " " not in normalized:
-            return re.search(rf"(?<!\w){re.escape(normalized)}(?!\w)", text) is not None
-        return normalized in text
 
     def _has_database_catalog(self, request: AgentDecideRequest) -> bool:
         return any(t.name == "database_query" for t in request.external_tools) and (
@@ -285,270 +260,16 @@ class DecisionService:
         log.info("agent_decision route=unsupported intent=unsupported_business_question selected_table=none operation=none reason=qwen_route")
         return validate_decision(UnsupportedDecision(type="unsupported", answer=answer).model_dump())
 
-    def _deterministic_database_guard(self, request: AgentDecideRequest):
-        latest = self._latest_project_guard(request)
-        if latest:
-            return latest
-        details = self._project_details_guard(request)
-        if details:
-            return details
-        delayed = self._delayed_projects_report_guard(request)
-        if delayed:
-            return delayed
-        if not self._is_project_count(request.message):
+    def _schema_database_plan(self, request: AgentDecideRequest):
+        planned = self.schema_planner.plan(request.message, request.semantic_catalog, request.rules.max_rows)
+        if not planned:
             return None
-        table = self._domain_table(request.semantic_catalog, "projects")
-        if table != "projects":
-            log.info("agent_decision route=unsupported intent=project_count selected_table=%s operation=count reason=missing_authoritative_project_table", table or "none")
-            return None
-        return {
-            "type": "tool_calls",
-            "intent": "project_count",
-            "reason": "deterministic_domain_entity_guard",
-            "tool_calls": [
-                {
-                    "id": "db_1",
-                    "tool": "database_query",
-                    "plan": {"operation": "count", "table": table, "filters": [], "limit": min(request.rules.max_rows, 20)},
-                }
-            ],
-            "local_rag_results": [],
-            "final_answer_instruction": self._instruction(prefer_arabic(request.message, request.locale)),
-        }
-
-    def _latest_project_guard(self, request: AgentDecideRequest):
-        if not self._is_latest_project(request.message):
-            return None
-        latest = self._domain_report(request.semantic_catalog, "projects", "latest_project")
-        if not latest or not latest.get("enabled"):
-            missing = ", ".join(latest.get("missing_fields", [])) if isinstance(latest, dict) else "latest_project"
-            log.info("agent_decision route=unsupported intent=latest_project selected_table=projects operation=select reason=missing_latest_mapping missing=%s", missing)
-            return {"type": "unsupported", "answer": "لا يوجد حقل مناسب لتحديد آخر مشروع تم إضافته."}
-        table = latest.get("table")
-        order_field = latest.get("order_field")
-        display_fields = [field for field in latest.get("display_fields", []) if isinstance(field, str)]
-        if not table or not order_field:
-            return {"type": "unsupported", "answer": "لا يوجد حقل مناسب لتحديد آخر مشروع تم إضافته."}
-        return {
-            "type": "tool_calls",
-            "intent": "latest_project",
-            "reason": "deterministic_domain_entity_guard",
-            "tool_calls": [
-                {
-                    "id": "db_1",
-                    "tool": "database_query",
-                    "plan": {
-                        "intent": "latest_project",
-                        "operation": "select",
-                        "table": table,
-                        "columns": display_fields,
-                        "filters": [],
-                        "order_by": {"column": order_field, "direction": "desc"},
-                        "limit": 1,
-                    },
-                }
-            ],
-            "local_rag_results": [],
-            "final_answer_instruction": self._instruction(prefer_arabic(request.message, request.locale)),
-        }
-
-    def _project_details_guard(self, request: AgentDecideRequest):
-        text = self._normalize(request.message)
-        has_code_indicator = any(term in text for term in CODE_INDICATOR_TERMS) or "project code" in request.message.lower()
-        if not (any(term in text for term in PROJECT_TERMS) and (any(term in text for term in PROJECT_DETAIL_TERMS) or has_code_indicator)):
-            return None
-        details = self._domain_report(request.semantic_catalog, "projects", "project_details")
-        if not details or not details.get("enabled"):
-            missing = ", ".join(details.get("missing_fields", [])) if isinstance(details, dict) else "project_details"
-            log.info("agent_decision route=unsupported intent=project_details selected_table=projects operation=details reason=missing_details_mapping missing=%s", missing)
-            return {"type": "unsupported", "answer": f"لا أستطيع جلب تفاصيل المشروع لأن إعدادات خريطة البيانات ناقصة: {missing}."}
-        table = details.get("table")
-        lookup_fields = [field for field in details.get("lookup_fields", []) if isinstance(field, str)]
-        code_fields = [field for field in details.get("code_fields", []) if isinstance(field, str)]
-        display_fields = [field for field in details.get("display_fields", []) if isinstance(field, str)]
-        code_lookup = self._project_code_lookup(request.message)
-        if code_lookup:
-            if not code_fields:
-                log.info("agent_decision route=unsupported intent=project_details selected_table=projects operation=details reason=missing_project_code_field normalized_message=%s extracted_code=%s", text, code_lookup["normalized"])
-                return {"type": "unsupported", "answer": "لا يوجد حقل كود للمشاريع في الـ schema الحالية."}
-            selected_code_field = code_fields[0]
-            log.info("agent_decision route=database_query intent=project_details selected_entity=project selected_table=%s selected_code_field=%s normalized_message=%s extracted_code=%s",
-                     table, selected_code_field, text, code_lookup["normalized"])
-            return {
-                "type": "tool_calls",
-                "intent": "project_details",
-                "reason": "deterministic_domain_entity_guard",
-                "tool_calls": [
-                    {
-                        "id": "db_1",
-                        "tool": "database_query",
-                        "plan": {
-                            "intent": "project_details",
-                            "operation": "details",
-                            "table": table,
-                            "columns": display_fields,
-                            "filters": [
-                                {"column": selected_code_field, "operator": "code_equals_normalized", "value": code_lookup["normalized"]}
-                            ],
-                            "limit": 1,
-                        },
-                    }
-                ],
-                "local_rag_results": [],
-                "final_answer_instruction": self._instruction(prefer_arabic(request.message, request.locale)),
-            }
-        lookup_value = self._project_lookup_value(request.message)
-        if not lookup_value:
-            return None
-        if not table or not lookup_fields:
-            return {"type": "unsupported", "answer": "لا أستطيع جلب تفاصيل المشروع لأن حقول البحث غير مكتملة في خريطة البيانات."}
-        return {
-            "type": "tool_calls",
-            "intent": "project_details",
-            "reason": "deterministic_domain_entity_guard",
-            "tool_calls": [
-                {
-                    "id": "db_1",
-                    "tool": "database_query",
-                    "plan": {
-                        "intent": "project_details",
-                        "operation": "details",
-                        "table": table,
-                        "lookup_value": lookup_value,
-                        "lookup_fields": lookup_fields,
-                        "columns": display_fields,
-                        "limit": 1,
-                    },
-                }
-            ],
-            "local_rag_results": [],
-            "final_answer_instruction": self._instruction(prefer_arabic(request.message, request.locale)),
-        }
-
-    def _delayed_projects_report_guard(self, request: AgentDecideRequest):
-        if not self._is_delayed_projects_report(request.message):
-            return None
-        report = self._domain_report(request.semantic_catalog, "projects", "delayed_projects_report")
-        if not report or not report.get("enabled"):
-            missing = ", ".join(report.get("missing_fields", [])) if isinstance(report, dict) else "delayed_projects_report"
-            log.info("agent_decision route=unsupported intent=delayed_projects_report selected_table=projects operation=select reason=missing_report_mapping missing=%s", missing)
-            return {
-                "type": "unsupported",
-                "answer": f"لا أستطيع إعداد تقرير المشاريع المتأخرة لأن إعدادات خريطة البيانات ناقصة: {missing}.",
-            }
-        table = report.get("table")
-        deadline = report.get("deadline_field")
-        completion = report.get("completion_field")
-        order_field = report.get("order_field")
-        title = report.get("title_field")
-        status = report.get("status_field")
-        if not all([table, deadline, completion, order_field, title]):
-            return {"type": "unsupported", "answer": "لا أستطيع إعداد تقرير المشاريع المتأخرة لأن حقول التقرير المطلوبة غير مكتملة في خريطة البيانات."}
-        columns = [title, status, deadline, completion, "actual_delivery_date", order_field]
-        columns = list(dict.fromkeys([c for c in columns if c]))
-        return {
-            "type": "tool_calls",
-            "intent": "delayed_projects_report",
-            "reason": "deterministic_domain_entity_guard",
-            "tool_calls": [
-                {
-                    "id": "db_1",
-                    "tool": "database_query",
-                    "plan": {
-                        "intent": "delayed_projects_report",
-                        "operation": "select",
-                        "table": table,
-                        "columns": columns,
-                        "filters": [
-                            {"column": deadline, "operator": "lt", "value": "today"},
-                            {"column": completion, "operator": "not_completed", "value": False},
-                        ],
-                        "order_by": {"column": order_field, "direction": "desc"},
-                        "limit": self._requested_limit(request.message, int(report.get("default_limit", 4))),
-                    },
-                }
-            ],
-            "local_rag_results": [],
-            "final_answer_instruction": self._instruction(prefer_arabic(request.message, request.locale)),
-        }
-
-    def _is_project_count(self, message: str) -> bool:
-        text = self._normalize(message)
-        return any(term in text for term in PROJECT_TERMS) and any(term in text for term in COUNT_TERMS)
-
-    def _is_delayed_projects_report(self, message: str) -> bool:
-        text = self._normalize(message)
-        return any(term in text for term in PROJECT_TERMS) and any(term in text for term in DELAY_REPORT_TERMS) and (
-            any(term in text for term in DELIVERY_TERMS) or "اخر" in text or "آخر" in message
-        )
-
-    def _is_latest_project(self, message: str) -> bool:
-        text = self._normalize(message)
-        if not any(term in text for term in PROJECT_TERMS) or not any(term in text for term in LATEST_TERMS):
-            return False
-        return any(term in text for term in ADDED_TERMS) or "latest" in text or "last" in text or "newest" in text
-
-    def _domain_table(self, catalog: dict, entity: str) -> str | None:
-        for item in catalog.get("domain_entities", []):
-            if item.get("entity") == entity and item.get("count_operation") == "count":
-                return item.get("table")
-        return None
-
-    def _domain_report(self, catalog: dict, entity: str, report_name: str) -> dict | None:
-        for item in catalog.get("domain_entities", []):
-            if item.get("entity") == entity:
-                report = item.get(report_name)
-                return report if isinstance(report, dict) else None
-        return None
-
-    def _requested_limit(self, message: str, default: int) -> int:
-        text = self._normalize(message)
-        match = re.search(r"\b([1-9][0-9]?)\b", text)
-        if match:
-            return min(max(int(match.group(1)), 1), 20)
-        if "اربع" in text or "اربعه" in text:
-            return 4
-        return min(max(default, 1), 20)
-
-    def _project_lookup_value(self, message: str) -> str | None:
-        cleaned = re.sub(r"[؟?؛،,]", " ", message).strip()
-        patterns = [
-            r"(?:المشروع|مشروع|project)\s+([A-Za-z0-9_-]{2,80})",
-            r"([A-Za-z]+[0-9][A-Za-z0-9_-]{1,80})",
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, cleaned, re.IGNORECASE)
-            if match:
-                return match.group(1)
-        return None
-
-    def _project_code_lookup(self, message: str) -> dict[str, str] | None:
-        normalized_text = self._normalize(message)
-        has_indicator = any(term in normalized_text for term in CODE_INDICATOR_TERMS) or "project code" in message.lower()
-        pattern = r"([A-Za-z][A-Za-z0-9]*(?:\s*[-–—]\s*[A-Za-z0-9]+){2,})"
-        match = re.search(pattern, message, re.IGNORECASE)
-        if not match and has_indicator:
-            match = re.search(r"([A-Za-z0-9]{2,}(?:[\s_-]+[A-Za-z0-9]{2,}){1,})", message, re.IGNORECASE)
-        if not match:
-            return None
-        raw = match.group(1).strip()
-        hyphenated = re.sub(r"\s*[-–—]\s*", "-", raw)
-        hyphenated = re.sub(r"\s+", "-", hyphenated).strip("-")
-        if not re.search(r"[A-Za-z]", hyphenated) or not re.search(r"\d", hyphenated):
-            return None
-        normalized = hyphenated.lower()
-        return {
-            "raw": raw,
-            "normalized": normalized,
-            "upper": normalized.upper(),
-            "spaced": normalized.replace("-", " "),
-            "compact": normalized.replace(" ", ""),
-        }
+        if planned.get("type") == "tool_calls":
+            planned["final_answer_instruction"] = self._instruction(prefer_arabic(request.message, request.locale))
+        return planned
 
     def _normalize(self, value: str) -> str:
-        text = value.lower()
-        text = text.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا").replace("ة", "ه")
-        return re.sub(r"[^\w\s]", " ", text)
+        return ArabicNormalizer.normalize(value)
 
     def _instruction(self, arabic: bool) -> str:
         return "Answer in Arabic using database results and local RAG results." if arabic else "Answer using database results and local RAG results."
