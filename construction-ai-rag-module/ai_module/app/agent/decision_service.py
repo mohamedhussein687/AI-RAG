@@ -299,6 +299,7 @@ class DecisionService:
         table = str(plan.get("table") or "")
         operation = str(plan.get("operation") or "")
         columns = [str(column) for column in plan.get("columns") or [] if column]
+        self._normalize_plan_filters(plan)
         if columns and not plan.get("fields"):
             plan["fields"] = columns
 
@@ -315,6 +316,30 @@ class DecisionService:
     def _client_name_request(self, message: str) -> bool:
         text = self._normalize(message)
         return any(ArabicNormalizer.contains_term(text, term) for term in ("اسم", "اسماء", "الاسماء", "name", "names"))
+
+    @staticmethod
+    def _normalize_plan_filters(plan: dict) -> None:
+        operator_aliases = {
+            "=": "eq",
+            "==": "eq",
+            "!=": "ne",
+            "<>": "ne",
+            ">": "gt",
+            ">=": "gte",
+            "<": "lt",
+            "<=": "lte",
+        }
+        filters = plan.get("filters")
+        if not isinstance(filters, list):
+            return
+        for item in filters:
+            if not isinstance(item, dict):
+                continue
+            if "field" in item and "column" not in item:
+                item["column"] = item.pop("field")
+            operator = item.get("operator")
+            if isinstance(operator, str):
+                item["operator"] = operator_aliases.get(operator.strip(), operator)
 
     def _message_for_understanding(self, request: AgentDecideRequest) -> str:
         if not self._is_vague_follow_up(request.message):

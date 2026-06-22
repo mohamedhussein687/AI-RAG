@@ -593,6 +593,35 @@ def test_vague_follow_up_resolves_to_previous_database_intent(client, auth_heade
     assert plan["fields"] == ["name"]
 
 
+def test_llm_symbolic_filter_operator_is_normalized(client, auth_headers, monkeypatch):
+    async def symbolic_operator_plan(self, messages):
+        return {
+            "type": "tool_calls",
+            "route": "database_query",
+            "tool_calls": [
+                {
+                    "id": "db_1",
+                    "tool": "database_query",
+                    "plan": {
+                        "operation": "count",
+                        "table": "invoices",
+                        "filters": [{"field": "total", "operator": ">", "value": 0}],
+                        "limit": 20,
+                    },
+                }
+            ],
+        }
+
+    monkeypatch.setattr(LlmClient, "chat_json", symbolic_operator_plan)
+    response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("كم فاتورة أكبر من صفر؟", semantic_catalog=invoice_catalog()))
+    assert response.status_code == 200
+    data = response.json()
+    assert data["route"] == "database_query"
+    plan = data["tool_calls"][0]["plan"]
+    assert plan["filters"][0]["column"] == "total"
+    assert plan["filters"][0]["operator"] == "gt"
+
+
 def test_forbidden_for_password(client, auth_headers):
     response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("هات password المستخدم"))
     assert response.status_code == 200
