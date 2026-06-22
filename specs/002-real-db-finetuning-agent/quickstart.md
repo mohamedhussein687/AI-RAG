@@ -212,18 +212,18 @@ Latest Phase 8 GitHub/server validation, recorded 2026-06-23:
 ```text
 GitHub push:
   Branch: feature/real-db-finetuning-agent
-  Commit pushed: 441b4d5bb47ddfd53251dc5027126230e126c32b
+  Commit pushed: fcf1a763add7fb1d0361eddd8e11f04ca55a8faf
   Repository: github.com:mohamedhussein687/AI-RAG.git
 
 Server pull:
   ssh techlab-ai
   Path: /home/rag/AI-RAG
   Branch: feature/real-db-finetuning-agent
-  Commit pulled: 441b4d5bb47ddfd53251dc5027126230e126c32b
+  Commit pulled: fcf1a763add7fb1d0361eddd8e11f04ca55a8faf
 
 Server focused tests:
-  .venv/bin/python -m pytest tests/test_repository_hygiene.py tests/test_restore_backup.py -q
-  Result: 7 passed, 1 warning
+  .venv/bin/python -m pytest tests/test_ingestion_worker_schema_commands.py tests/test_repository_hygiene.py tests/test_restore_backup.py -q
+  Result: 10 passed, 1 warning
 
 Server restore:
   .venv/bin/python -m ingestion_worker restore-backup --file /home/rag/backup.sql --database construction_ai_dev
@@ -235,7 +235,7 @@ Server schema status:
 
 Server schema ingest:
   .venv/bin/python -m ingestion_worker schema-ingest --source construction_mysql
-  Result: blocked; MySQL configuration is incomplete for MYSQL_HOST, MYSQL_DATABASE, MYSQL_USER.
+  Result: clean JSON failure with exit code 2; MySQL configuration is incomplete for MYSQL_HOST, MYSQL_DATABASE, MYSQL_USER.
 
 Server smoke chat:
   .venv/bin/python -m ingestion_worker smoke-chat --message "انت كويس؟"
