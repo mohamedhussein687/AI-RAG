@@ -48,6 +48,15 @@ def qwen_count_invoices(*_args, **_kwargs):
     }
 
 
+def qwen_identity(*_args, **_kwargs):
+    return {
+        "type": "final_answer",
+        "answer": "أنا مساعد ORBIT AI، شغال على مشروع ORBIT، وأقدر أساعدك في قراءة وتحليل بيانات المشروع حسب الصلاحيات المتاحة.",
+        "display": {"type": "text", "data": {}},
+        "sources": [],
+    }
+
+
 def test_decide_returns_qwen_database_query(client, auth_headers, monkeypatch):
     async def fake_chat_json(self, messages):
         assert "semantic_catalog" in messages[1]["content"]
@@ -62,6 +71,19 @@ def test_decide_returns_qwen_database_query(client, auth_headers, monkeypatch):
     assert data["tool_calls"][0]["plan"]["operation"] == "count"
     assert data["tool_calls"][0]["plan"]["table"] == "invoices"
     assert "sql" not in str(data).lower()
+
+
+def test_identity_question_is_handled_by_qwen(client, auth_headers, monkeypatch):
+    async def fake_chat_json(self, messages):
+        assert "انت مين؟" in messages[1]["content"]
+        return qwen_identity()
+
+    monkeypatch.setattr(LlmClient, "chat_json", fake_chat_json)
+    response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("انت مين؟", semantic_catalog=invoice_catalog()))
+    assert response.status_code == 200
+    data = response.json()
+    assert data["type"] == "final_answer"
+    assert data["answer"].startswith("أنا مساعد ORBIT AI")
 
 
 def test_equivalent_invoice_questions_generate_same_plan(client, auth_headers, monkeypatch):

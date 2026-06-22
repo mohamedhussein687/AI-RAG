@@ -1,9 +1,16 @@
 from app.schemas import AgentFinalRequest, AgentFinalResponse, Display
 from .citation_validator import answer_with_citations, validate_answer
 from .prompt_builder import prefer_arabic
+from app.clients.llm_client import LlmClient
+from app.config import Settings
+import json
 
 
 class FinalAnswerService:
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.llm = LlmClient(settings)
+
     async def final(self, request: AgentFinalRequest) -> AgentFinalResponse:
         arabic = prefer_arabic(request.message, request.locale)
         has_db = bool(request.tool_results)
@@ -26,7 +33,7 @@ class FinalAnswerService:
             prefix = "حسب المستندات المتاحة:" if arabic else "Based on the available documents:"
             answer = answer_with_citations(prefix, request.local_rag_results)
         elif has_db:
-            answer = self._summarize_tool_results(request, arabic)
+            answer = await self._qwen_database_answer(request, arabic)
         else:
             answer = "لا توجد نتائج كافية للإجابة." if arabic else "There is not enough evidence to answer."
 
@@ -49,3 +56,35 @@ class FinalAnswerService:
                 if key in result:
                     return (f"القيمة هي {result[key]}." if arabic else f"The value is {result[key]}.")
         return "تم استلام نتائج البيانات من النظام." if arabic else "Received data results from the system."
+
+    async def _qwen_database_answer(self, request: AgentFinalRequest, arabic: bool) -> str:
+        if self.settings.fake_llm:
+            return self._summarize_tool_results(request, arabic)
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You write the final user-facing answer from trusted database query results. "
+                    "Do not invent numbers, do not mention SQL, do not reveal internal tokens or credentials, and do not add unsupported facts. "
+                    "Answer naturally in Arabic when the user asks in Arabic. Return exactly one JSON object with key answer."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "question": request.message,
+                        "locale": request.locale,
+                        "query_results": [r.result for r in request.tool_results],
+                        "instruction": request.final_answer_instruction,
+                        "style": "natural conversational Arabic; include thousands separators for large numbers when useful",
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ]
+        data = await self.llm.chat_json(messages)
+        answer = data.get("answer") if isinstance(data, dict) else None
+        if isinstance(answer, str) and answer.strip():
+            return answer.strip()
+        return self._summarize_tool_results(request, arabic)

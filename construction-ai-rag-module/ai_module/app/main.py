@@ -69,8 +69,8 @@ async def decide(request: AgentDecideRequest, settings: Settings = Depends(get_s
 
 
 @app.post("/api/agent/final", dependencies=[Depends(require_module_token)])
-async def final(request: AgentFinalRequest):
-    return await FinalAnswerService().final(request)
+async def final(request: AgentFinalRequest, settings: Settings = Depends(get_settings)):
+    return await FinalAnswerService(settings).final(request)
 
 
 @app.post("/api/rag/documents", status_code=201, dependencies=[Depends(require_module_token)])

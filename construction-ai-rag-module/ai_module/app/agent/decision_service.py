@@ -28,11 +28,11 @@ class DecisionService:
     async def decide(self, request: AgentDecideRequest):
         text = request.message.lower()
         arabic = prefer_arabic(request.message, request.locale)
-        if any(term in text for term in SENSITIVE):
-            return validate_decision(ForbiddenDecision(type="forbidden").model_dump())
-
         if self._has_database_catalog(request):
             return await self._qwen_database_decision(request, arabic)
+
+        if any(term in text for term in SENSITIVE):
+            return validate_decision(ForbiddenDecision(type="forbidden").model_dump())
 
         is_doc = any(term.lower() in text for term in DOC_TERMS)
         is_mixed = (any(t in text for t in DELAY_TERMS) and ("سياسة" in text or "policy" in text))
@@ -67,7 +67,10 @@ class DecisionService:
                 "content": (
                     "You convert a natural-language question into a database_query tool-call JSON object. Return exactly one strict JSON object and nothing else. "
                     "Never output SQL, SELECT, FROM, executable query text, markdown, explanations, tables not in catalog, columns not in catalog, values not supported by catalog, joins, or credentials. "
+                    "You are the only intent understanding engine. Determine the entity, operation, filters, grouping, sorting, and aggregation from the user message. "
                     "Use only the semantic catalog. If the requested entity, relation, field, or value is not clearly represented, return unsupported. "
+                    "For identity questions such as who are you, your name, or what project you work on, do not call tools. Return exactly "
+                    '{"type":"final_answer","answer":"أنا مساعد ORBIT AI، شغال على مشروع ORBIT، وأقدر أساعدك في قراءة وتحليل بيانات المشروع حسب الصلاحيات المتاحة.","display":{"type":"text","data":{}},"sources":[]}. '
                     "The catalog has tables_index for choosing entities and allowed table operations. Detailed tables include columns for filters, grouping, sorting, lists, and aggregates. "
                     "For simple count questions you may use a table from tables_index when count is allowed, even if that table is not in detailed tables. "
                     "For filters, grouping, sorting, listing, or aggregates, use only columns present in detailed tables. "

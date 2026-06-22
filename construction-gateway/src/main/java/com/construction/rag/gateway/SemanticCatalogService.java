@@ -59,7 +59,7 @@ class SemanticCatalogService {
     return generated;
   }
 
-  Map<String, Object> promptSummary(SemanticCatalog catalog, String question) {
+  Map<String, Object> promptSummary(SemanticCatalog catalog) {
     List<CatalogTable> candidates = catalog.tables().stream()
       .filter(CatalogTable::enabled)
       .sorted(Comparator.comparing(CatalogTable::logicalName))

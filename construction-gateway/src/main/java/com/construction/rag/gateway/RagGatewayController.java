@@ -25,13 +25,11 @@ class RagGatewayController {
   private final AiModuleClient ai;
   private final SafeDatabaseQueryService databaseQueries;
   private final SemanticCatalogService catalogs;
-  private final ArabicDatabaseAnswerFormatter arabicFormatter;
 
-  RagGatewayController(AiModuleClient ai, SafeDatabaseQueryService databaseQueries, SemanticCatalogService catalogs, ArabicDatabaseAnswerFormatter arabicFormatter) {
+  RagGatewayController(AiModuleClient ai, SafeDatabaseQueryService databaseQueries, SemanticCatalogService catalogs) {
     this.ai = ai;
     this.databaseQueries = databaseQueries;
     this.catalogs = catalogs;
-    this.arabicFormatter = arabicFormatter;
   }
 
   @GetMapping("/health/live") Map<String, String> live() { return Map.of("status", "ok"); }
@@ -87,7 +85,6 @@ class RagGatewayController {
 
   private Mono<Object> apiKeyChat(RagClient client, Map<String, Object> request) {
     String message = String.valueOf(request.getOrDefault("message", ""));
-    if (identityQuestion(message)) return Mono.just(arabicFormatter.identity());
     SemanticCatalog catalog = catalogs.catalog(client);
     Map<String, Object> normalized = mutableCopy(request);
     normalized.putIfAbsent("conversation_id", "laravel-" + client.clientName());
@@ -101,13 +98,12 @@ class RagGatewayController {
       "permissions", List.of("live-data.read")
     ));
     normalized.put("allowed_schema", catalogs.allowedSchema(catalog));
-    normalized.put("semantic_catalog", catalogs.promptSummary(catalog, message));
+    normalized.put("semantic_catalog", catalogs.promptSummary(catalog));
     normalized.put("external_tools", List.of(Map.of("name", "database_query")));
     normalized.put("local_tools", List.of());
     normalized.put("rules", Map.of("return_sql", false, "max_tool_calls", 1, "max_rows", 20, "joins_allowed", false));
     return ai.post("/api/agent/decide", normalized)
-      .flatMap(decision -> finishApiKeyDecision(client, decision, normalized, catalog))
-      .onErrorResume(ResponseStatusException.class, ignored -> localApiKeyDecision(client, normalized, catalog));
+      .flatMap(decision -> finishApiKeyDecision(client, decision, normalized));
   }
 
   @ExceptionHandler(IllegalArgumentException.class)
@@ -151,28 +147,32 @@ class RagGatewayController {
     return Mono.just(decision);
   }
 
-  private Mono<Object> finishApiKeyDecision(RagClient client, Object decision, Map<String, Object> normalized, SemanticCatalog catalog) {
-    if (!(decision instanceof Map<?, ?> map)) return localApiKeyDecision(client, normalized, catalog);
+  private Mono<Object> finishApiKeyDecision(RagClient client, Object decision, Map<String, Object> normalized) {
+    if (!(decision instanceof Map<?, ?> map)) return Mono.just(decision);
     Object type = map.get("type");
-    if (!"tool_calls".equals(type)) return localApiKeyDecision(client, normalized, catalog);
+    if (!"tool_calls".equals(type)) return Mono.just(decision);
     Object callsObject = map.get("tool_calls");
-    if (!(callsObject instanceof List<?> calls) || calls.isEmpty()) return localApiKeyDecision(client, normalized, catalog);
+    if (!(callsObject instanceof List<?> calls) || calls.isEmpty()) throw new IllegalArgumentException("AI tool call is missing");
     Object first = calls.getFirst();
     if (!(first instanceof Map<?, ?> toolCall)) throw new IllegalArgumentException("AI tool call is malformed");
     if (!"database_query".equals(String.valueOf(toolCall.get("tool")))) throw new IllegalArgumentException("AI requested a non-allowlisted tool");
     return databaseQueries.execute(client, toolCall)
-      .map(result -> (Object) arabicFormatter.answer(String.valueOf(normalized.get("message")), toolCall, result))
-      .onErrorResume(ignored -> localApiKeyDecision(client, normalized, catalog));
-  }
-
-  private Mono<Object> localApiKeyDecision(RagClient client, Map<String, Object> normalized, SemanticCatalog catalog) {
-    return Mono.just(arabicFormatter.unsupported("الجدول أو العلاقة أو الحقل المطلوب"));
-  }
-
-  private boolean identityQuestion(String message) {
-    String text = message == null ? "" : message.toLowerCase().replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا').replace('؟', ' ').trim();
-    return text.contains("انت مين") || text.contains("مين انت") || text.contains("ما اسمك") || text.contains("اسمك ايه")
-      || text.contains("انت شغال على مشروع ايه") || text.contains("شغال على مشروع ايه");
+      .flatMap(result -> {
+        Object toolCallId = toolCall.get("id");
+        Map<String, Object> finalRequest = new LinkedHashMap<>();
+        finalRequest.put("conversation_id", normalized.get("conversation_id"));
+        finalRequest.put("message", normalized.get("message"));
+        finalRequest.put("locale", normalized.get("locale"));
+        finalRequest.put("conversation_history", normalized.get("conversation_history"));
+        finalRequest.put("tool_results", List.of(Map.of(
+          "tool_call_id", toolCallId == null ? "db_1" : String.valueOf(toolCallId),
+          "tool", "database_query",
+          "result", result
+        )));
+        finalRequest.put("local_rag_results", List.of());
+        finalRequest.put("final_answer_instruction", map.get("final_answer_instruction"));
+        return ai.post("/api/agent/final", finalRequest);
+      });
   }
 
   private TrustedIdentity identity(ServerWebExchange exchange) {

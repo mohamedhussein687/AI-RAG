@@ -1,4 +1,26 @@
 from .conftest import index_policy
+from app.clients.llm_client import LlmClient
+
+
+def test_final_database_answer_uses_qwen_when_llm_enabled(client, auth_headers, monkeypatch):
+    async def fake_chat_json(self, messages):
+        assert "query_results" in messages[1]["content"]
+        return {"answer": "عدد الفواتير الموجودة في النظام هو 27,193 فاتورة."}
+
+    monkeypatch.setenv("FAKE_LLM", "false")
+    from app.config import get_settings
+    get_settings.cache_clear()
+    monkeypatch.setattr(LlmClient, "chat_json", fake_chat_json)
+    response = client.post("/api/agent/final", headers=auth_headers, json={
+        "conversation_id": "conv_123",
+        "message": "عدد الفواتير الموجودة كام؟",
+        "locale": "ar",
+        "tool_results": [{"tool_call_id": "db_1", "tool": "database_query", "result": {"operation": "count", "table": "invoices", "count": 27193}}],
+        "local_rag_results": [],
+    })
+    assert response.status_code == 200
+    assert response.json()["answer"] == "عدد الفواتير الموجودة في النظام هو 27,193 فاتورة."
+    get_settings.cache_clear()
 
 
 def test_final_answer_includes_sources_when_rag_is_used(client, auth_headers):

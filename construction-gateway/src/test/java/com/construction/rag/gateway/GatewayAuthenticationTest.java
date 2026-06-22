@@ -117,7 +117,7 @@ class GatewayAuthenticationTest {
       ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("{\"type\":\"clarification\",\"question\":\"هل يمكنك التوضيح؟\"}"));
       ai.start(InetAddress.getByName("127.0.0.1"), 0);
       GatewayProperties props = props(ai.url("/").toString(), "internal-ai-token");
-      RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props), null, null, null);
+      RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props), null, null);
       ServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/api/agent/decide").build());
       exchange.getAttributes().put(BearerTokenFilter.IDENTITY_ATTR, identity());
 
@@ -137,7 +137,7 @@ class GatewayAuthenticationTest {
 
   @Test
   void forgedRequestBodyContextIsRejectedByController() {
-    RagGatewayController controller = new RagGatewayController(null, null, null, null);
+    RagGatewayController controller = new RagGatewayController(null, null, null);
     ServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/api/rag/search").build());
     exchange.getAttributes().put(BearerTokenFilter.IDENTITY_ATTR, identity());
 
@@ -156,6 +156,9 @@ class GatewayAuthenticationTest {
       ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("""
         {"type":"tool_calls","tool_calls":[{"id":"db_1","tool":"database_query","plan":{"operation":"count","table":"projects","filters":[{"column":"status","operator":"eq","value":"waiting"}],"limit":100}}],"local_rag_results":[],"final_answer_instruction":"Answer in Arabic."}
         """));
+      ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("""
+        {"answer":"عدد المشاريع بحالة waiting هو 4.","display":{"type":"metric","data":{"tool_results":[{"count":4}],"citations_valid":true}},"sources":[]}
+        """));
       ai.start(InetAddress.getByName("127.0.0.1"), 0);
       GatewayProperties props = props(ai.url("/").toString(), "internal-ai-token");
       SafeDatabaseQueryService db = Mockito.mock(SafeDatabaseQueryService.class);
@@ -164,13 +167,14 @@ class GatewayAuthenticationTest {
       SemanticCatalog catalog = catalog();
       Mockito.when(catalogs.catalog(Mockito.any())).thenReturn(catalog);
       Mockito.when(catalogs.allowedSchema(catalog)).thenReturn(Map.of("tables", List.of(Map.of("name", "projects", "columns", List.of("status"), "allowed_operations", List.of("count")))));
-      Mockito.when(catalogs.promptSummary(Mockito.eq(catalog), Mockito.anyString())).thenReturn(Map.of("tables_index", List.of(Map.of("name", "projects")), "tables", List.of()));
-      RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props), db, catalogs, new ArabicDatabaseAnswerFormatter());
+      Mockito.when(catalogs.promptSummary(catalog)).thenReturn(Map.of("tables_index", List.of(Map.of("name", "projects")), "tables", List.of()));
+      RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props), db, catalogs);
       ServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/api/chat").header("X-API-Key", "redacted").build());
       exchange.getAttributes().put(ApiKeyClientFilter.RAG_CLIENT_ATTR, new RagClient(7, "orbit", "mysql", "db", 3306, "orbit", "user", "encrypted", "active"));
 
       Object response = controller.chat(Map.of("message", "كم مشروع waiting؟"), exchange).block();
       RecordedRequest decide = ai.takeRequest(2, TimeUnit.SECONDS);
+      RecordedRequest finalAnswer = ai.takeRequest(2, TimeUnit.SECONDS);
 
       assertThat(response).isInstanceOf(Map.class);
       assertThat(decide).isNotNull();
@@ -178,6 +182,10 @@ class GatewayAuthenticationTest {
       JsonNode decideBody = JSON.readTree(decide.getBody().readUtf8());
       assertThat(decideBody.get("semantic_catalog")).isNotNull();
       assertThat(decideBody.get("external_tools").get(0).get("name").asText()).isEqualTo("database_query");
+      assertThat(finalAnswer).isNotNull();
+      assertThat(finalAnswer.getPath()).isEqualTo("/api/agent/final");
+      JsonNode finalBody = JSON.readTree(finalAnswer.getBody().readUtf8());
+      assertThat(finalBody.get("tool_results").get(0).get("result").get("count").asInt()).isEqualTo(4);
       assertThat(((Map<?, ?>) response).get("answer")).isEqualTo("عدد المشاريع بحالة waiting هو 4.");
       ArgumentCaptor<Map> planCaptor = ArgumentCaptor.forClass(Map.class);
       Mockito.verify(db).execute(Mockito.argThat(client -> client.clientName().equals("orbit")), planCaptor.capture());
@@ -186,17 +194,30 @@ class GatewayAuthenticationTest {
   }
 
   @Test
-  void apiKeyIdentityQuestionDoesNotCallDatabaseOrAi() {
+  void apiKeyIdentityQuestionIsHandledByAiNotSpringOrDatabase() throws Exception {
+    try (MockWebServer ai = new MockWebServer()) {
+      ai.enqueue(new MockResponse().setHeader("Content-Type", "application/json").setBody("""
+        {"type":"final_answer","answer":"أنا مساعد ORBIT AI، شغال على مشروع ORBIT، وأقدر أساعدك في قراءة وتحليل بيانات المشروع حسب الصلاحيات المتاحة.","display":{"type":"text","data":{}},"sources":[]}
+        """));
+      ai.start(InetAddress.getByName("127.0.0.1"), 0);
     SafeDatabaseQueryService db = Mockito.mock(SafeDatabaseQueryService.class);
     SemanticCatalogService catalogs = Mockito.mock(SemanticCatalogService.class);
-    RagGatewayController controller = new RagGatewayController(null, db, catalogs, new ArabicDatabaseAnswerFormatter());
+      SemanticCatalog catalog = catalog();
+      Mockito.when(catalogs.catalog(Mockito.any())).thenReturn(catalog);
+      Mockito.when(catalogs.allowedSchema(catalog)).thenReturn(Map.of("tables", List.of()));
+      Mockito.when(catalogs.promptSummary(catalog)).thenReturn(Map.of("tables_index", List.of(Map.of("name", "projects")), "tables", List.of()));
+      RagGatewayController controller = new RagGatewayController(new AiModuleClient(WebClient.builder(), props(ai.url("/").toString(), "internal-ai-token")), db, catalogs);
     ServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/api/chat").header("X-API-Key", "redacted").build());
     exchange.getAttributes().put(ApiKeyClientFilter.RAG_CLIENT_ATTR, new RagClient(7, "orbit", "mysql", "db", 3306, "orbit", "user", "encrypted", "active"));
 
     Object response = controller.chat(Map.of("message", "انت مين؟"), exchange).block();
+      RecordedRequest decide = ai.takeRequest(2, TimeUnit.SECONDS);
 
     assertThat(((Map<?, ?>) response).get("answer")).isEqualTo("أنا مساعد ORBIT AI، شغال على مشروع ORBIT، وأقدر أساعدك في قراءة وتحليل بيانات المشروع حسب الصلاحيات المتاحة.");
-    Mockito.verifyNoInteractions(db, catalogs);
+      assertThat(decide).isNotNull();
+      assertThat(decide.getPath()).isEqualTo("/api/agent/decide");
+      Mockito.verifyNoInteractions(db);
+    }
   }
 
   private static BearerTokenFilter filter(Jwt jwt) {
