@@ -78,7 +78,7 @@ class RagChunk(StrictModel):
 
 class DatabaseFilter(StrictModel):
     column: str
-    operator: Literal["eq", "ne", "gt", "gte", "lt", "lte", "in", "contains", "is_null", "not_completed"]
+    operator: Literal["eq", "ne", "gt", "gte", "lt", "lte", "in", "contains", "is_null", "not_completed", "code_equals_normalized"]
     value: Any
 
 

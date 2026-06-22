@@ -69,6 +69,42 @@ def test_latest_project_answer_is_deterministic_arabic(client, auth_headers, mon
     assert answer == "آخر مشروع تم إضافته هو: costa، الكود: c832 - p2 - 06-2026، الحالة: 2، تاريخ الإضافة: 2026-06-19، آخر تحديث: 2026-06-20."
 
 
+def test_project_details_by_code_answer_is_deterministic_arabic(client, auth_headers, monkeypatch):
+    async def should_not_call_llm(*_args, **_kwargs):
+        raise AssertionError("project code details answer should be formatted deterministically")
+
+    from app.clients.llm_client import LlmClient
+    monkeypatch.setattr(LlmClient, "chat_json", should_not_call_llm)
+    response = client.post("/api/agent/final", headers=auth_headers, json={
+        "conversation_id": "conv",
+        "message": "عاوز بيانات عن المشروع صاخب الكود c832 - p2 - 06-2026",
+        "locale": "ar",
+        "conversation_history": [],
+        "tool_results": [{"tool_call_id": "db_1", "tool": "database_query", "result": {"operation": "details", "intent": "project_details", "lookup_type": "project_code", "table": "projects", "lookup_value": "c832-p2-06-2026", "rows": [{"title": "costa", "project_code": "c832 - p2 - 06-2026", "status": 2, "planned_delivery_date": "2026-08-01", "updated_at": "2026-06-20"}]}}],
+        "local_rag_results": [],
+        "final_answer_instruction": "Answer in Arabic.",
+    })
+    assert response.status_code == 200
+    answer = response.json()["answer"]
+    assert "بيانات المشروع: costa" in answer
+    assert "الكود: c832 - p2 - 06-2026" in answer
+    assert "تاريخ التسليم/النهاية: 2026-08-01" in answer
+
+
+def test_missing_project_code_answer_is_specific(client, auth_headers):
+    response = client.post("/api/agent/final", headers=auth_headers, json={
+        "conversation_id": "conv",
+        "message": "تفاصيل مشروع بالكود C832-P2-06-2026",
+        "locale": "ar",
+        "conversation_history": [],
+        "tool_results": [{"tool_call_id": "db_1", "tool": "database_query", "result": {"operation": "details", "intent": "project_details", "lookup_type": "project_code", "table": "projects", "lookup_value": "c832-p2-06-2026", "rows": []}}],
+        "local_rag_results": [],
+        "final_answer_instruction": "Answer in Arabic.",
+    })
+    assert response.status_code == 200
+    assert response.json()["answer"] == "لم أجد مشروعًا بالكود c832-p2-06-2026 في البيانات الحالية."
+
+
 def test_final_answer_includes_sources_when_rag_is_used(client, auth_headers):
     index_policy(client, auth_headers)
     search = client.post("/api/rag/search", headers=auth_headers, json={"query": "تأخر المشروع", "user_context": {"tenant_id": "3", "project_ids": ["22"], "permissions": ["docs.view", "policies.view"]}, "top_k": 1, "filters": {"project_id": "22"}})

@@ -110,6 +110,8 @@ class FinalAnswerService:
             payload = result.result
             if isinstance(payload, dict) and payload.get("intent") == "project_details" and payload.get("rows") == []:
                 lookup = payload.get("lookup_value") or "المطلوب"
+                if payload.get("lookup_type") == "project_code":
+                    return f"لم أجد مشروعًا بالكود {lookup} في البيانات الحالية." if arabic else f"No project with code {lookup} was found in the current data."
                 return f"لم أجد مشروعًا باسم أو كود {lookup} في البيانات الحالية." if arabic else f"No project named or coded {lookup} was found in the current data."
         return None
 
@@ -119,17 +121,36 @@ class FinalAnswerService:
         for result in request.tool_results:
             payload = result.result
             if not isinstance(payload, dict) or payload.get("intent") != "latest_project":
-                continue
+                if not isinstance(payload, dict) or payload.get("intent") != "project_details" or payload.get("lookup_type") != "project_code":
+                    continue
             rows = payload.get("rows")
             if not isinstance(rows, list) or not rows:
-                return "لا توجد مشاريع في البيانات الحالية."
+                return None
             row = rows[0] if isinstance(rows[0], dict) else {}
-            title = row.get("title") or "بدون اسم"
-            parts = [f"آخر مشروع تم إضافته هو: {title}"]
+            if payload.get("intent") == "latest_project":
+                title = row.get("title") or "بدون اسم"
+                parts = [f"آخر مشروع تم إضافته هو: {title}"]
+            else:
+                title = row.get("title") or "بدون اسم"
+                parts = [f"بيانات المشروع: {title}"]
             if row.get("project_code"):
                 parts.append(f"الكود: {row.get('project_code')}")
             if row.get("status") is not None:
                 parts.append(f"الحالة: {row.get('status')}")
+            if row.get("client") is not None:
+                parts.append(f"العميل: {row.get('client')}")
+            elif row.get("client_id") is not None:
+                parts.append(f"العميل: {row.get('client_id')}")
+            if row.get("start_date"):
+                parts.append(f"تاريخ البداية: {row.get('start_date')}")
+            if row.get("planned_delivery_date"):
+                parts.append(f"تاريخ التسليم/النهاية: {row.get('planned_delivery_date')}")
+            elif row.get("end_date"):
+                parts.append(f"تاريخ التسليم/النهاية: {row.get('end_date')}")
+            for progress_key in ("progress_percentage", "progress", "percentage"):
+                if row.get(progress_key) is not None:
+                    parts.append(f"نسبة الإنجاز: {row.get(progress_key)}")
+                    break
             if row.get("created_at"):
                 parts.append(f"تاريخ الإضافة: {row.get('created_at')}")
             if row.get("updated_at"):

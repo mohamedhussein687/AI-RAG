@@ -138,6 +138,10 @@ class SafeDatabaseQueryService {
   }
 
   private Map<String, Object> executeDetails(RagClient client, CatalogTable table, Map<?, ?> plan) throws Exception {
+    CodeLookup codeLookup = codeLookup(table, plan.get("filters"));
+    if (codeLookup != null) {
+      return executeCodeDetails(client, table, plan, codeLookup);
+    }
     String lookupValue = string(plan.get("lookup_value")).trim();
     if (lookupValue.isBlank()) throw new IllegalArgumentException("lookup_value is required for details");
     List<CatalogColumn> lookupColumns = lookupColumns(table, plan.get("lookup_fields"));
@@ -168,6 +172,33 @@ class SafeDatabaseQueryService {
       result.put("intent", intent == null ? "project_details" : String.valueOf(intent));
       result.put("table", table.logicalName());
       result.put("lookup_value", lookupValue);
+      result.put("rows", rows);
+      return result;
+    }
+  }
+
+  private Map<String, Object> executeCodeDetails(RagClient client, CatalogTable table, Map<?, ?> plan, CodeLookup lookup) throws Exception {
+    List<CatalogColumn> columns = selectedColumns(table, plan.get("columns"));
+    int limit = Math.min(limit(plan.get("limit")), 1);
+    String select = String.join(", ", columns.stream().map(c -> c.physicalName() + " as " + c.logicalName()).toList());
+    String physical = lookup.column().physicalName();
+    String normalizedColumn = "replace(replace(replace(lower(" + physical + "), ' ', ''), '–', '-'), '—', '-')";
+    String sql = "select " + select + " from " + table.physicalName()
+      + " where " + physical + " = ? or lower(trim(" + physical + ")) = lower(?) or " + normalizedColumn + " = ? limit " + limit;
+    DataSource dataSource = dataSources.dataSource(client);
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setReadOnly(true);
+      validateActualSchema(connection, table, plan, List.of(Map.of("column", lookup.column().logicalName(), "operator", "code_equals_normalized", "value", lookup.normalized())));
+      log.info("safe_database_query operation=details selected_table={} physical_table={} code_field={} filters=code_equals_normalized limit={} sql_template={} reason=validated_catalog_plan",
+        table.logicalName(), table.physicalName(), lookup.column().logicalName(), limit, sql);
+      List<Map<String, Object>> rows = queryRows(connection, sql, List.of(lookup.raw(), lookup.normalized(), lookup.compact()), columns);
+      Map<String, Object> result = new LinkedHashMap<>();
+      result.put("operation", "details");
+      Object intent = plan.get("intent");
+      result.put("intent", intent == null ? "project_details" : String.valueOf(intent));
+      result.put("table", table.logicalName());
+      result.put("lookup_value", lookup.normalized());
+      result.put("lookup_type", "project_code");
       result.put("rows", rows);
       return result;
     }
@@ -248,6 +279,7 @@ class SafeDatabaseQueryService {
           clauses.add(column.physicalName() + " = ?");
           params.add(0);
         }
+        case "code_equals_normalized" -> throw new IllegalArgumentException("code filter is only allowed for details lookup");
         default -> throw new IllegalArgumentException("filter operator is not allowlisted");
       }
     }
@@ -313,6 +345,42 @@ class SafeDatabaseQueryService {
     return List.copyOf(out);
   }
 
+  private CodeLookup codeLookup(CatalogTable table, Object filtersValue) {
+    if (!(filtersValue instanceof List<?> filters)) return null;
+    for (Object item : filters) {
+      Map<?, ?> filter = requireMap(item, "filter");
+      if (!"code_equals_normalized".equals(string(filter.get("operator")))) continue;
+      CatalogColumn column = requiredColumn(table, filter.get("column"), "filter.column");
+      if (!column.fieldType().equals("string") || !column.allowedOperations().contains("filter")) throw new IllegalArgumentException("project code field is not allowlisted");
+      Object rawValue = filter.get("value");
+      String raw;
+      String normalized;
+      String compact;
+      if (rawValue instanceof Map<?, ?> valueMap) {
+        Object rawObject = valueMap.containsKey("raw") ? valueMap.get("raw") : valueMap.get("normalized");
+        raw = string(rawObject);
+        Object normalizedObject = valueMap.containsKey("normalized") ? valueMap.get("normalized") : raw;
+        normalized = normalizeProjectCode(string(normalizedObject));
+        Object compactObject = valueMap.containsKey("compact") ? valueMap.get("compact") : normalized;
+        compact = normalizeProjectCode(string(compactObject));
+      } else {
+        raw = string(rawValue);
+        normalized = normalizeProjectCode(raw);
+        compact = normalized.replace(" ", "");
+      }
+      return new CodeLookup(column, raw, normalized, compact);
+    }
+    return null;
+  }
+
+  private String normalizeProjectCode(String value) {
+    String normalized = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
+    normalized = normalized.replace('–', '-').replace('—', '-');
+    normalized = normalized.replaceAll("\\s*-\\s*", "-").replaceAll("\\s+", " ");
+    if (normalized.isBlank()) throw new IllegalArgumentException("project code value is required");
+    return normalized;
+  }
+
   private int limit(Object value) {
     if (value == null) return DEFAULT_MAX_LIMIT;
     int limit = value instanceof Number n ? n.intValue() : Integer.parseInt(String.valueOf(value));
@@ -357,4 +425,5 @@ class SafeDatabaseQueryService {
   }
 
   private record TableAllowlist(List<String> columns, List<String> operations) {}
+  private record CodeLookup(CatalogColumn column, String raw, String normalized, String compact) {}
 }

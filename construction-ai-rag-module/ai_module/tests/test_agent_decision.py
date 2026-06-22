@@ -65,6 +65,7 @@ def project_catalog_with_cms_table():
                     "operation": "details",
                     "table": "projects",
                     "lookup_fields": ["title", "project_code", "project_serial"],
+                    "code_fields": ["project_code"],
                     "display_fields": ["title", "project_code", "project_serial", "status", "planned_delivery_date", "actual_delivery_date", "updated_at"],
                     "default_limit": 1,
                 },
@@ -234,6 +235,45 @@ def test_project_details_questions_use_projects_lookup_not_about_us(client, auth
         assert plan["lookup_value"] == "test60"
         assert plan["lookup_fields"] == ["title", "project_code", "project_serial"]
         assert plan["limit"] == 1
+
+
+def test_project_details_by_code_handles_arabic_typo_and_spaced_code(client, auth_headers, monkeypatch):
+    async def should_not_call_qwen(self, messages):
+        raise AssertionError("project code details guard should run before LLM table selection")
+
+    monkeypatch.setattr(LlmClient, "chat_json", should_not_call_qwen)
+    questions = [
+        "عاوز بيانات عن المشروع صاخب الكود c832 - p2 - 06-2026",
+        "عاوز بيانات عن المشروع صاحب الكود c832-p2-06-2026",
+        "تفاصيل مشروع بالكود C832-P2-06-2026",
+        "project code c832-p2-06-2026",
+    ]
+    for question in questions:
+        response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload(question, semantic_catalog=project_catalog_with_cms_table()))
+        assert response.status_code == 200
+        data = response.json()
+        assert data["type"] == "tool_calls"
+        plan = data["tool_calls"][0]["plan"]
+        assert plan["intent"] == "project_details"
+        assert plan["operation"] == "details"
+        assert plan["table"] == "projects"
+        assert plan["table"] != "about_us"
+        assert plan["limit"] == 1
+        assert plan["filters"] == [{"column": "project_code", "operator": "code_equals_normalized", "value": "c832-p2-06-2026"}]
+
+
+def test_project_details_by_code_without_code_field_returns_structured_error(client, auth_headers, monkeypatch):
+    async def should_not_call_qwen(self, messages):
+        raise AssertionError("missing code field should not fall through to LLM")
+
+    monkeypatch.setattr(LlmClient, "chat_json", should_not_call_qwen)
+    catalog = project_catalog_with_cms_table()
+    catalog["domain_entities"][0]["project_details"]["code_fields"] = []
+    response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("تفاصيل مشروع بالكود C832-P2-06-2026", semantic_catalog=catalog))
+    assert response.status_code == 200
+    data = response.json()
+    assert data["type"] == "unsupported"
+    assert "لا يوجد حقل كود" in data["answer"]
 
 
 def test_latest_project_questions_use_projects_created_at_not_about_us(client, auth_headers, monkeypatch):

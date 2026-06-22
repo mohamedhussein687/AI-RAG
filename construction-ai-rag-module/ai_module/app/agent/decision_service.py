@@ -24,7 +24,8 @@ PROJECT_TERMS = ("مشروع", "مشاريع", "المشاريع", "project", "p
 COUNT_TERMS = ("كم", "عدد", "count", "how many", "total")
 DELAY_REPORT_TERMS = ("متاخر", "متاخرين", "متاخره", "تأخير", "تاخير", "delayed", "late")
 DELIVERY_TERMS = ("تسليم", "delivery", "deadline", "end date")
-PROJECT_DETAIL_TERMS = ("معلومات", "تفاصيل", "details", "detail", "info", "information")
+PROJECT_DETAIL_TERMS = ("معلومات", "تفاصيل", "بيانات", "details", "detail", "info", "information", "data")
+CODE_INDICATOR_TERMS = ("صاحب الكود", "صاخب الكود", "بالكود", "كود المشروع", "رقم المشروع", "project code")
 LATEST_TERMS = ("اخر", "آخر", "latest", "last", "newest")
 ADDED_TERMS = ("اضافته", "اضافتة", "مضاف", "added", "created")
 log = logging.getLogger(__name__)
@@ -277,19 +278,52 @@ class DecisionService:
 
     def _project_details_guard(self, request: AgentDecideRequest):
         text = self._normalize(request.message)
-        if not (any(term in text for term in PROJECT_TERMS) and any(term in text for term in PROJECT_DETAIL_TERMS)):
+        has_code_indicator = any(term in text for term in CODE_INDICATOR_TERMS) or "project code" in request.message.lower()
+        if not (any(term in text for term in PROJECT_TERMS) and (any(term in text for term in PROJECT_DETAIL_TERMS) or has_code_indicator)):
             return None
         details = self._domain_report(request.semantic_catalog, "projects", "project_details")
         if not details or not details.get("enabled"):
             missing = ", ".join(details.get("missing_fields", [])) if isinstance(details, dict) else "project_details"
             log.info("agent_decision route=unsupported intent=project_details selected_table=projects operation=details reason=missing_details_mapping missing=%s", missing)
             return {"type": "unsupported", "answer": f"لا أستطيع جلب تفاصيل المشروع لأن إعدادات خريطة البيانات ناقصة: {missing}."}
+        table = details.get("table")
+        lookup_fields = [field for field in details.get("lookup_fields", []) if isinstance(field, str)]
+        code_fields = [field for field in details.get("code_fields", []) if isinstance(field, str)]
+        display_fields = [field for field in details.get("display_fields", []) if isinstance(field, str)]
+        code_lookup = self._project_code_lookup(request.message)
+        if code_lookup:
+            if not code_fields:
+                log.info("agent_decision route=unsupported intent=project_details selected_table=projects operation=details reason=missing_project_code_field normalized_message=%s extracted_code=%s", text, code_lookup["normalized"])
+                return {"type": "unsupported", "answer": "لا يوجد حقل كود للمشاريع في الـ schema الحالية."}
+            selected_code_field = code_fields[0]
+            log.info("agent_decision route=database_query intent=project_details selected_entity=project selected_table=%s selected_code_field=%s normalized_message=%s extracted_code=%s",
+                     table, selected_code_field, text, code_lookup["normalized"])
+            return {
+                "type": "tool_calls",
+                "intent": "project_details",
+                "reason": "deterministic_domain_entity_guard",
+                "tool_calls": [
+                    {
+                        "id": "db_1",
+                        "tool": "database_query",
+                        "plan": {
+                            "intent": "project_details",
+                            "operation": "details",
+                            "table": table,
+                            "columns": display_fields,
+                            "filters": [
+                                {"column": selected_code_field, "operator": "code_equals_normalized", "value": code_lookup["normalized"]}
+                            ],
+                            "limit": 1,
+                        },
+                    }
+                ],
+                "local_rag_results": [],
+                "final_answer_instruction": self._instruction(prefer_arabic(request.message, request.locale)),
+            }
         lookup_value = self._project_lookup_value(request.message)
         if not lookup_value:
             return None
-        table = details.get("table")
-        lookup_fields = [field for field in details.get("lookup_fields", []) if isinstance(field, str)]
-        display_fields = [field for field in details.get("display_fields", []) if isinstance(field, str)]
         if not table or not lookup_fields:
             return {"type": "unsupported", "answer": "لا أستطيع جلب تفاصيل المشروع لأن حقول البحث غير مكتملة في خريطة البيانات."}
         return {
@@ -411,6 +445,29 @@ class DecisionService:
             if match:
                 return match.group(1)
         return None
+
+    def _project_code_lookup(self, message: str) -> dict[str, str] | None:
+        normalized_text = self._normalize(message)
+        has_indicator = any(term in normalized_text for term in CODE_INDICATOR_TERMS) or "project code" in message.lower()
+        pattern = r"([A-Za-z][A-Za-z0-9]*(?:\s*[-–—]\s*[A-Za-z0-9]+){2,})"
+        match = re.search(pattern, message, re.IGNORECASE)
+        if not match and has_indicator:
+            match = re.search(r"([A-Za-z0-9]{2,}(?:[\s_-]+[A-Za-z0-9]{2,}){1,})", message, re.IGNORECASE)
+        if not match:
+            return None
+        raw = match.group(1).strip()
+        hyphenated = re.sub(r"\s*[-–—]\s*", "-", raw)
+        hyphenated = re.sub(r"\s+", "-", hyphenated).strip("-")
+        if not re.search(r"[A-Za-z]", hyphenated) or not re.search(r"\d", hyphenated):
+            return None
+        normalized = hyphenated.lower()
+        return {
+            "raw": raw,
+            "normalized": normalized,
+            "upper": normalized.upper(),
+            "spaced": normalized.replace("-", " "),
+            "compact": normalized.replace(" ", ""),
+        }
 
     def _normalize(self, value: str) -> str:
         text = value.lower()

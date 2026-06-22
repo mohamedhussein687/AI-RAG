@@ -195,4 +195,61 @@ class SafeDatabaseQueryServiceTest {
     verify(exact).setObject(eq(1), eq("test60"));
     verify(fuzzy).setObject(eq(1), eq("%test60%"));
   }
+
+  @Test
+  void projectDetailsByCodeUsesNormalizedParameterizedLookup() throws Exception {
+    ClientDataSourceManager manager = mock(ClientDataSourceManager.class);
+    DataSource dataSource = mock(DataSource.class);
+    Connection connection = mock(Connection.class);
+    DatabaseMetaData metaData = mock(DatabaseMetaData.class);
+    ResultSet tables = mock(ResultSet.class);
+    PreparedStatement statement = mock(PreparedStatement.class);
+    ResultSet queryResult = mock(ResultSet.class);
+    SemanticCatalogService catalogs = mock(SemanticCatalogService.class);
+    RagClient orbit = new RagClient(7, "orbit", "mysql", "db", 3306, "orbit", "user", "encrypted", "active");
+
+    when(manager.dataSource(orbit)).thenReturn(dataSource);
+    when(dataSource.getConnection()).thenReturn(connection);
+    when(connection.getCatalog()).thenReturn("testorbit");
+    when(connection.getMetaData()).thenReturn(metaData);
+    when(metaData.getTables(eq("testorbit"), any(), eq("projects"), any())).thenReturn(tables);
+    when(tables.next()).thenReturn(true);
+    when(metaData.getColumns(eq("testorbit"), any(), eq("projects"), any())).thenAnswer(invocation -> {
+      ResultSet rs = mock(ResultSet.class);
+      when(rs.next()).thenReturn(true);
+      return rs;
+    });
+    String sql = "select title as title, project_code as project_code, project_status as status, updated_at as updated_at from projects where project_code = ? or lower(trim(project_code)) = lower(?) or replace(replace(replace(lower(project_code), ' ', ''), '–', '-'), '—', '-') = ? limit 1";
+    when(connection.prepareStatement(sql)).thenReturn(statement);
+    when(statement.executeQuery()).thenReturn(queryResult);
+    when(queryResult.next()).thenReturn(false);
+    when(catalogs.catalog(orbit)).thenReturn(new SemanticCatalog("orbit", 7, "now", "hash", true, List.of(new CatalogTable(
+      "projects", "projects", "project", List.of("مشروع", "مشاريع"), List.of("projects", "project"),
+      List.of(
+        new CatalogColumn("title", "title", "string", true, List.of("filter", "sort", "group"), List.of(), false, true),
+        new CatalogColumn("project_code", "project_code", "string", true, List.of("filter", "sort", "group"), List.of(), false, true),
+        new CatalogColumn("status", "project_status", "string", true, List.of("filter", "sort", "group"), List.of(), false, true),
+        new CatalogColumn("updated_at", "updated_at", "date", true, List.of("filter", "sort", "group"), List.of(), false, true)
+      ),
+      List.of("count", "list", "select", "details", "group_count"), true, 0
+    ))));
+
+    SafeDatabaseQueryService service = new SafeDatabaseQueryService(manager, catalogs);
+    Map<String, Object> result = service.execute(orbit, Map.of(
+      "plan", Map.of(
+        "intent", "project_details",
+        "operation", "details",
+        "table", "projects",
+        "columns", List.of("title", "project_code", "status", "updated_at"),
+        "filters", List.of(Map.of("column", "project_code", "operator", "code_equals_normalized", "value", "c832-p2-06-2026")),
+        "limit", 1
+      )
+    )).block();
+
+    assertThat(result).containsEntry("lookup_type", "project_code");
+    assertThat(result).containsEntry("lookup_value", "c832-p2-06-2026");
+    verify(statement).setObject(eq(1), eq("c832-p2-06-2026"));
+    verify(statement).setObject(eq(2), eq("c832-p2-06-2026"));
+    verify(statement).setObject(eq(3), eq("c832-p2-06-2026"));
+  }
 }

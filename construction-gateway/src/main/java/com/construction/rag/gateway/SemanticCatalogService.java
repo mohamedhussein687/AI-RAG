@@ -30,7 +30,7 @@ class SemanticCatalogService {
   private static final int MAX_TABLES_INDEX_IN_PROMPT = 80;
   private static final int MAX_DETAILED_TABLES_IN_PROMPT = 10;
   private static final int MAX_COLUMNS_IN_PROMPT = 12;
-  private static final int CATALOG_VERSION = 6;
+  private static final int CATALOG_VERSION = 7;
   private static final Set<String> CMS_TABLE_NAMES = Set.of(
     "about_us", "pages", "settings", "banners", "sliders", "menus", "menu_items", "cms_pages", "cms_blocks"
   );
@@ -355,12 +355,17 @@ class SemanticCatalogService {
       CatalogColumn column = projects.column(candidate);
       if (column != null && "string".equals(column.fieldType()) && column.allowedOperations().contains("filter")) lookup.add(column.logicalName());
     }
+    List<String> codeFields = new ArrayList<>();
+    for (String candidate : List.of("project_code", "code", "reference", "project_number", "ref_no", "number")) {
+      CatalogColumn column = projects.column(candidate);
+      if (column != null && "string".equals(column.fieldType()) && column.allowedOperations().contains("filter")) codeFields.add(column.logicalName());
+    }
     if (title == null || lookup.isEmpty()) return Map.of(
       "enabled", false,
       "missing_fields", missing("title", title, "lookup_fields", lookup.isEmpty() ? null : lookup)
     );
     List<String> display = new ArrayList<>();
-    for (String candidate : List.of("title", "project_code", "project_serial", "status", "planned_delivery_date", "actual_delivery_date", "is_finished", "created_at", "updated_at")) {
+    for (String candidate : List.of("title", "project_code", "project_serial", "status", "client_id", "client", "customer_id", "start_date", "planned_delivery_date", "end_date", "actual_delivery_date", "progress", "progress_percentage", "percentage", "is_finished", "created_at", "updated_at")) {
       CatalogColumn column = projects.column(candidate);
       if (column != null) display.add(column.logicalName());
     }
@@ -370,6 +375,7 @@ class SemanticCatalogService {
       "operation", "details",
       "table", projects.logicalName(),
       "lookup_fields", List.copyOf(lookup),
+      "code_fields", List.copyOf(codeFields),
       "display_fields", List.copyOf(display),
       "default_limit", 1
     );
