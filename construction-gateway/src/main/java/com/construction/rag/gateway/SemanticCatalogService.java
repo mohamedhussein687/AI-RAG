@@ -23,8 +23,8 @@ import org.springframework.stereotype.Component;
 
 @Component
 class SemanticCatalogService {
-  private static final int MAX_TABLES_IN_PROMPT = 40;
-  private static final int MAX_COLUMNS_IN_PROMPT = 40;
+  private static final int MAX_DETAILED_TABLES_IN_PROMPT = 80;
+  private static final int MAX_COLUMNS_IN_PROMPT = 12;
   private static final int CATALOG_VERSION = 2;
   private static final Set<String> SENSITIVE_TOKENS = Set.of(
     "password", "passwd", "remember_token", "api_token", "token", "secret", "private_key",
@@ -59,9 +59,17 @@ class SemanticCatalogService {
   }
 
   Map<String, Object> promptSummary(SemanticCatalog catalog) {
+    List<Map<String, Object>> tableIndex = new ArrayList<>();
     List<Map<String, Object>> tables = new ArrayList<>();
     for (CatalogTable table : catalog.tables()) {
       if (!table.enabled()) continue;
+      tableIndex.add(Map.of(
+        "name", table.logicalName(),
+        "entity_ar", table.arabicSynonyms(),
+        "entity_en", table.englishSynonyms(),
+        "allowed_operations", table.allowedOperations()
+      ));
+      if (tables.size() >= MAX_DETAILED_TABLES_IN_PROMPT) continue;
       List<Map<String, Object>> columns = new ArrayList<>();
       for (CatalogColumn column : table.columns()) {
         if (!column.enabled()) continue;
@@ -80,9 +88,8 @@ class SemanticCatalogService {
         "columns", columns,
         "allowed_operations", table.allowedOperations()
       ));
-      if (tables.size() >= MAX_TABLES_IN_PROMPT) break;
     }
-    return Map.of("catalog_version", catalog.version(), "schema_hash", catalog.schemaHash(), "tables", tables);
+    return Map.of("catalog_version", catalog.version(), "schema_hash", catalog.schemaHash(), "tables_index", tableIndex, "tables", tables);
   }
 
   Map<String, Object> allowedSchema(SemanticCatalog catalog) {
