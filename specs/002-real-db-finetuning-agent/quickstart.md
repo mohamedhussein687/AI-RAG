@@ -251,6 +251,35 @@ Server validation did not modify `/home/rag/backup.sql`. A real server restore
 requires a safe local/server `MYSQL_*` restore target for `construction_ai_dev`;
 the existing ORBIT production database variables were not reused for restore.
 
+Latest Phase 9 validation, recorded 2026-06-23:
+
+```text
+AI module full tests:
+  .venv/bin/python -m pytest -q
+  Result: 125 passed, 1 warning
+
+Spring Gateway tests:
+  ./mvnw test
+  Result: 23 tests run, 0 failures, 0 errors, BUILD SUCCESS
+
+OpenAPI/YAML validation:
+  Parsed specs/002-real-db-finetuning-agent/contracts/database-agent.openapi.yaml
+  Result: OPENAPI_YAML_VALID=YES, PATH_COUNT=6, SCHEMA_COUNT=19
+
+CLI command verification:
+  .venv/bin/python -m ingestion_worker --help
+  .venv/bin/python -m training.dataset_builder --help
+  .venv/bin/python -m training.train_lora --help
+  .venv/bin/python -m training.evaluate_agent --help
+  Result: documented restore, schema, smoke-chat, dataset, training, and evaluation commands are implemented.
+
+Secret/artifact hygiene:
+  git status --short
+  git diff --cached --name-only
+  git ls-files artifact scan
+  Result: no staged files; scan only matched allowed .env.example and sample_fake.jsonl artifacts.
+```
+
 ## 12. Commit and Push
 
 ```bash

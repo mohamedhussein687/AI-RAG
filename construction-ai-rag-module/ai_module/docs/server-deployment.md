@@ -98,6 +98,67 @@ Report only redacted results:
 - route and answer summaries for smoke chat;
 - any GPU/training blocker.
 
+If the server does not have a safe `MYSQL_*` target configured for
+`construction_ai_dev`, the restore and schema-ingest commands must fail safely
+with a redacted configuration error. Do not reuse production ORBIT credentials
+for an unrelated restore target and do not modify `/home/rag/backup.sql`.
+
+## Final Report Structure
+
+Use this structure for the end-of-work report:
+
+```text
+LOCAL RESULT
+- local path:
+- branch:
+- commit SHA:
+- files changed:
+- tests run:
+- tests result:
+- backup local path used:
+- database restored: yes/no
+- schema ingestion: success/fail
+- dataset generated: yes/no
+- dataset examples count:
+- base model:
+- LoRA/QLoRA config:
+- fine-tuning result:
+- evaluation result:
+- local smoke chat:
+  1. اعرض جميع اسماء المستخدمين -> ...
+  2. اريد بيانات المستخدم Ayman Ibrahim El Sayed -> ...
+  3. كام مشروع عندي؟ -> ...
+  4. انت كويس؟ -> ...
+
+GITHUB RESULT
+- repository:
+- branch pushed:
+- commit SHA:
+- PR URL, if created:
+
+SERVER RESULT
+- server:
+- server path:
+- branch pulled:
+- commit SHA on server:
+- backup path used:
+- database restored: yes/no
+- services rebuilt/restarted:
+- health check:
+- schema status:
+- server smoke chat:
+  1. اعرض جميع اسماء المستخدمين -> ...
+  2. اريد بيانات المستخدم Ayman Ibrahim El Sayed -> ...
+  3. كام مشروع عندي؟ -> ...
+  4. انت كويس؟ -> ...
+
+LIMITATIONS / BLOCKERS
+- list blockers honestly, especially GPU/fine-tuning limitations
+```
+
+The report must never contain credentials, tokens, SQL backup contents,
+generated real training data, model artifacts, or private keys.
+
 ## Service Boundary
 
 This workflow does not expose FastAPI, MySQL, PostgreSQL, Qdrant, model

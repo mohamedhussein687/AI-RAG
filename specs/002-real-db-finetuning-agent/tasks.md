@@ -228,15 +228,15 @@
 
 **Purpose**: Final security, docs, cleanup, and release readiness across all stories.
 
-- [ ] T091 [P] Update `construction-ai-rag-module/ai_module/docs/database-aware-agent.md` with architecture, safety boundaries, schema RAG, live SQL, and final answer behavior
-- [ ] T092 [P] Update `construction-ai-rag-module/ai_module/docs/fine-tuning.md` with the difference between fine-tuning and RAG, what is trained, and what is never trained
-- [ ] T093 [P] Update `construction-ai-rag-module/ai_module/docs/server-deployment.md` with exact final report structure and server smoke workflow
-- [ ] T094 Run full Python test suite from `construction-ai-rag-module/ai_module` and fix failures in touched files
-- [ ] T095 Run full Spring Gateway Maven tests from `construction-gateway` and fix failures in touched files
-- [ ] T096 Run secret/artifact hygiene check with `git status --short` and `git diff --cached --name-only` from repository root
-- [ ] T097 Run OpenAPI/YAML validation for `specs/002-real-db-finetuning-agent/contracts/database-agent.openapi.yaml`
-- [ ] T098 Verify quickstart commands are accurate against implemented CLI paths in `specs/002-real-db-finetuning-agent/quickstart.md`
-- [ ] T099 Prepare final redacted report using the structure in `specs/002-real-db-finetuning-agent/quickstart.md`
+- [X] T091 [P] Update `construction-ai-rag-module/ai_module/docs/database-aware-agent.md` with architecture, safety boundaries, schema RAG, live SQL, and final answer behavior
+- [X] T092 [P] Update `construction-ai-rag-module/ai_module/docs/fine-tuning.md` with the difference between fine-tuning and RAG, what is trained, and what is never trained
+- [X] T093 [P] Update `construction-ai-rag-module/ai_module/docs/server-deployment.md` with exact final report structure and server smoke workflow
+- [X] T094 Run full Python test suite from `construction-ai-rag-module/ai_module` and fix failures in touched files
+- [X] T095 Run full Spring Gateway Maven tests from `construction-gateway` and fix failures in touched files
+- [X] T096 Run secret/artifact hygiene check with `git status --short` and `git diff --cached --name-only` from repository root
+- [X] T097 Run OpenAPI/YAML validation for `specs/002-real-db-finetuning-agent/contracts/database-agent.openapi.yaml`
+- [X] T098 Verify quickstart commands are accurate against implemented CLI paths in `specs/002-real-db-finetuning-agent/quickstart.md`
+- [X] T099 Prepare final redacted report using the structure in `specs/002-real-db-finetuning-agent/quickstart.md`
 
 ---
 

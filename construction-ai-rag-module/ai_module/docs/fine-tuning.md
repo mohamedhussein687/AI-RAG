@@ -6,6 +6,40 @@ schema-aware structured planning, safe refusal, and final Arabic answer style.
 It does not memorize changing operational rows; live facts still come from
 MySQL through validated read-only parameterized queries.
 
+## Fine-Tuning vs RAG vs Live SQL
+
+These three pieces have different jobs:
+
+- Fine-tuning teaches behavior: route classification, Arabic business wording,
+  safe JSON plan shape, refusal of sensitive requests, and answer tone.
+- Schema RAG keeps current database structure available to the model: table
+  names, column meanings, relationships, aliases, and enum-like values.
+- Live SQL returns current facts: counts, lists, record details, and aggregates
+  from the configured MySQL/MariaDB database.
+
+Do not train the model to memorize changing rows. Do not put credentials or
+secret values in training data. Do not treat a fine-tuned adapter as permission
+to bypass schema search, validation, or parameterized SQL execution.
+
+## What Is Trained
+
+Training examples may include:
+
+- schema-derived table and column descriptions;
+- safe aliases and business vocabulary;
+- synthetic and safe sample values;
+- route decisions for conversational, database, RAG, clarification, forbidden,
+  and unsupported messages;
+- structured JSON plans;
+- final Arabic answer style from provided rows.
+
+Training examples must exclude:
+
+- passwords, tokens, API keys, private keys, OTPs, reset tokens, and secrets;
+- generated real datasets committed to Git;
+- model weights, adapters, checkpoints, and training logs committed to Git;
+- full operational data dumps.
+
 ## Generate Data
 
 Generate a real local dataset from discovered schema metadata:
@@ -19,6 +53,11 @@ python -m training.dataset_builder \
 
 The generated real dataset is ignored by Git. Commit only the tiny fake sample
 at `data/training/sample_fake.jsonl`.
+
+The builder validates JSONL chat format, route balance, required smoke-question
+coverage, structured assistant JSON where expected, and absence of sensitive
+values. If the schema is small, the target is at least 500 examples. Larger
+schemas should produce 2,000 or more examples when enough safe entities exist.
 
 ## Validate and Smoke-Test Training
 
@@ -56,6 +95,10 @@ python -m training.train_lora \
 
 If local hardware cannot complete training, do not claim success. Keep the dry
 run report and record the GPU/VRAM blocker.
+
+The full training command should create a real adapter under `outputs/` only
+when compatible GPU/VRAM and dependencies are available. A dry run validates the
+pipeline but is not a trained model.
 
 ## Evaluate
 
@@ -98,3 +141,11 @@ LLM_TRAINING_REPORT_PATH=/absolute/path/to/training_report.json
 
 Do not commit adapters, merged model weights, generated datasets, checkpoints,
 or training outputs.
+
+## Acceptance Notes
+
+An adapter is acceptable only after evaluation shows the required JSON validity,
+route accuracy, table-resolution accuracy, sensitive-data refusal, no-write
+compliance, and Arabic answer behavior. If the available machine cannot finish
+full training, report the blocker honestly and deploy only the schema/search/chat
+components that were actually validated.
