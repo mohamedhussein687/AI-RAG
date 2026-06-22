@@ -173,10 +173,7 @@ class GatewayAuthenticationTest {
       RecordedRequest decide = ai.takeRequest(2, TimeUnit.SECONDS);
 
       assertThat(response).isInstanceOf(Map.class);
-      assertThat(decide.getPath()).isEqualTo("/api/agent/decide");
-      JsonNode decideBody = JSON.readTree(decide.getBody().readUtf8());
-      assertThat(decideBody.get("external_tools").get(0).get("name").asText()).isEqualTo("database_query");
-      assertThat(decideBody.get("allowed_schema").get("tables").get(0).get("name").asText()).isEqualTo("projects");
+      assertThat(decide).isNull();
       assertThat(((Map<?, ?>) response).get("answer")).isEqualTo("عدد المشاريع بحالة waiting هو 4.");
       ArgumentCaptor<Map> planCaptor = ArgumentCaptor.forClass(Map.class);
       Mockito.verify(db).execute(Mockito.argThat(client -> client.clientName().equals("orbit")), planCaptor.capture());

@@ -90,6 +90,16 @@ class RagGatewayController {
     String message = String.valueOf(request.getOrDefault("message", ""));
     if (orbitPlanner.identityQuestion(message)) return Mono.just(arabicFormatter.identity());
     SemanticCatalog catalog = catalogs.catalog(client);
+    java.util.Optional<Map<String, Object>> localPlan = orbitPlanner.plan(message, catalog);
+    if (localPlan.isPresent()) {
+      Map<String, Object> toolCall = localPlan.get();
+      return databaseQueries.execute(client, toolCall)
+        .map(result -> (Object) arabicFormatter.answer(message, toolCall, result))
+        .onErrorResume(ignored -> Mono.just(arabicFormatter.unsupported("الجدول أو العلاقة أو الحقل المطلوب")));
+    }
+    if (message.contains("كم") || message.contains("اعرض") || message.contains("حالات") || message.toLowerCase().contains("active") || message.toLowerCase().contains("waiting")) {
+      return Mono.just(arabicFormatter.unsupported("الجدول أو العلاقة أو الحقل المطلوب"));
+    }
     Map<String, Object> normalized = mutableCopy(request);
     normalized.putIfAbsent("conversation_id", "laravel-" + client.clientName());
     normalized.putIfAbsent("locale", "ar");
