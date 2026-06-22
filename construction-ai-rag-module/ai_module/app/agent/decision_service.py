@@ -13,10 +13,15 @@ from app.rag.retrieval_service import RetrievalService
 from app.schemas import RagSearchRequest, RagFilters
 from app.clients.llm_client import LlmClient
 import json
+import logging
+import re
 
 SENSITIVE = ("password", "باسورد", "كلمة السر", "secret", "credential", "token")
 DOC_TERMS = ("إزاي", "how to", "policy", "سياسة", "procedure", "إجراء", "manual", "دليل", "contract", "عقد", "مستخلص")
 DELAY_TERMS = ("متأخر", "delayed", "delay")
+PROJECT_TERMS = ("مشروع", "مشاريع", "المشاريع", "project", "projects")
+COUNT_TERMS = ("كم", "عدد", "count", "how many", "total")
+log = logging.getLogger(__name__)
 
 
 class DecisionService:
@@ -29,6 +34,19 @@ class DecisionService:
         text = request.message.lower()
         arabic = prefer_arabic(request.message, request.locale)
         if self._has_database_catalog(request):
+            guarded = self._deterministic_database_guard(request)
+            if guarded:
+                plan = guarded["tool_calls"][0]["plan"]
+                log.info(
+                    "agent_decision route=database_query intent=%s selected_table=%s operation=%s reason=%s",
+                    guarded.get("intent"),
+                    plan.get("table"),
+                    plan.get("operation"),
+                    guarded.get("reason"),
+                )
+                guarded.pop("intent", None)
+                guarded.pop("reason", None)
+                return validate_decision(guarded)
             return await self._qwen_database_decision(request, arabic)
 
         if any(term in text for term in SENSITIVE):
@@ -69,8 +87,11 @@ class DecisionService:
                     "Never output SQL, SELECT, FROM, executable query text, markdown, explanations, tables not in catalog, columns not in catalog, values not supported by catalog, joins, or credentials. "
                     "You are the only intent understanding engine. Determine the entity, operation, filters, grouping, sorting, and aggregation from the user message. "
                     "Use only the semantic catalog. If the requested entity, relation, field, or value is not clearly represented, return unsupported. "
+                    "For greetings, small-talk, wellbeing questions, thanks, and conversational messages that do not ask for business data, do not call tools. Return a natural Arabic final_answer. "
                     "For identity questions such as who are you, your name, or what project you work on, do not call tools. Return exactly "
                     '{"type":"final_answer","answer":"أنا مساعد ORBIT AI، شغال على مشروع ORBIT، وأقدر أساعدك في قراءة وتحليل بيانات المشروع حسب الصلاحيات المتاحة.","display":{"type":"text","data":{}},"sources":[]}. '
+                    "The domain_entities section contains authoritative business mappings. Operational project questions in Arabic or English must use domain entity projects and table projects. "
+                    "Never use CMS/content/website tables such as about_us, pages, settings, banners, sliders, or web_* for operational business questions unless the user explicitly asks about website content. "
                     "The catalog has tables_index for choosing entities and allowed table operations. Detailed tables include columns for filters, grouping, sorting, lists, and aggregates. "
                     "For simple count questions you may use a table from tables_index when count is allowed, even if that table is not in detailed tables. "
                     "For filters, grouping, sorting, listing, or aggregates, use only columns present in detailed tables. "
@@ -96,6 +117,7 @@ class DecisionService:
         ]
         decision = await self.llm.chat_json(messages)
         if not decision:
+            log.info("agent_decision route=unsupported intent=unknown selected_table=none operation=none reason=empty_llm_response")
             return validate_decision(UnsupportedDecision(type="unsupported").model_dump())
         if decision.get("type") == "tool_calls":
             decision["local_rag_results"] = []
@@ -105,7 +127,53 @@ class DecisionService:
                 call["tool"] = "database_query"
                 plan = call.get("plan", {})
                 plan["limit"] = min(int(plan.get("limit", request.rules.max_rows)), 20)
+                log.info(
+                    "agent_decision route=database_query intent=llm_structured selected_table=%s operation=%s reason=qwen_plan",
+                    plan.get("table"),
+                    plan.get("operation"),
+                )
+        elif decision.get("type") == "final_answer":
+            log.info("agent_decision route=conversational intent=llm_final_answer selected_table=none operation=none reason=qwen_final_answer")
+        else:
+            log.info("agent_decision route=%s intent=llm_non_tool selected_table=none operation=none reason=qwen_decision", decision.get("type"))
         return validate_decision(decision)
+
+    def _deterministic_database_guard(self, request: AgentDecideRequest):
+        if not self._is_project_count(request.message):
+            return None
+        table = self._domain_table(request.semantic_catalog, "projects")
+        if table != "projects":
+            log.info("agent_decision route=unsupported intent=project_count selected_table=%s operation=count reason=missing_authoritative_project_table", table or "none")
+            return None
+        return {
+            "type": "tool_calls",
+            "intent": "project_count",
+            "reason": "deterministic_domain_entity_guard",
+            "tool_calls": [
+                {
+                    "id": "db_1",
+                    "tool": "database_query",
+                    "plan": {"operation": "count", "table": table, "filters": [], "limit": min(request.rules.max_rows, 20)},
+                }
+            ],
+            "local_rag_results": [],
+            "final_answer_instruction": self._instruction(prefer_arabic(request.message, request.locale)),
+        }
+
+    def _is_project_count(self, message: str) -> bool:
+        text = self._normalize(message)
+        return any(term in text for term in PROJECT_TERMS) and any(term in text for term in COUNT_TERMS)
+
+    def _domain_table(self, catalog: dict, entity: str) -> str | None:
+        for item in catalog.get("domain_entities", []):
+            if item.get("entity") == entity and item.get("count_operation") == "count":
+                return item.get("table")
+        return None
+
+    def _normalize(self, value: str) -> str:
+        text = value.lower()
+        text = text.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا").replace("ة", "ه")
+        return re.sub(r"[^\w\s]", " ", text)
 
     def _instruction(self, arabic: bool) -> str:
         return "Answer in Arabic using database results and local RAG results." if arabic else "Answer using database results and local RAG results."

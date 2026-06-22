@@ -26,7 +26,10 @@ class SemanticCatalogService {
   private static final int MAX_TABLES_INDEX_IN_PROMPT = 80;
   private static final int MAX_DETAILED_TABLES_IN_PROMPT = 10;
   private static final int MAX_COLUMNS_IN_PROMPT = 12;
-  private static final int CATALOG_VERSION = 2;
+  private static final int CATALOG_VERSION = 3;
+  private static final Set<String> CMS_TABLE_NAMES = Set.of(
+    "about_us", "pages", "settings", "banners", "sliders", "menus", "menu_items", "cms_pages", "cms_blocks"
+  );
   private static final Set<String> SENSITIVE_TOKENS = Set.of(
     "password", "passwd", "remember_token", "api_token", "token", "secret", "private_key",
     "reset_token", "key", "credential", "authorization"
@@ -92,7 +95,13 @@ class SemanticCatalogService {
         "allowed_operations", table.allowedOperations()
       ));
     }
-    return Map.of("catalog_version", catalog.version(), "schema_hash", catalog.schemaHash(), "tables_index", tableIndex, "tables", tables);
+    return Map.of(
+      "catalog_version", catalog.version(),
+      "schema_hash", catalog.schemaHash(),
+      "domain_entities", domainEntities(catalog),
+      "tables_index", tableIndex,
+      "tables", tables
+    );
   }
 
   Map<String, Object> allowedSchema(SemanticCatalog catalog) {
@@ -236,7 +245,7 @@ class SemanticCatalogService {
             usedLogical.add(logical);
             columns.add(new CatalogColumn(logical, source.name(), fieldType(source.type()), source.nullable(), operations(source.type(), sensitive), enumValues(c, table, source), sensitive, !sensitive));
           }
-          boolean enabled = columns.stream().anyMatch(CatalogColumn::enabled);
+          boolean enabled = !cmsContentTable(table) && columns.stream().anyMatch(CatalogColumn::enabled);
           tables.add(new CatalogTable(table, table, entityName(table), arabicSynonyms(table), englishSynonyms(table), columns, tableOperations(columns), enabled, approximateRows(c, table)));
         }
       }
@@ -250,6 +259,32 @@ class SemanticCatalogService {
   private static boolean sensitive(String name) {
     String n = name.toLowerCase(Locale.ROOT);
     return SENSITIVE_TOKENS.stream().anyMatch(n::contains);
+  }
+
+  private static boolean cmsContentTable(String table) {
+    String t = table.toLowerCase(Locale.ROOT);
+    return CMS_TABLE_NAMES.contains(t)
+      || t.startsWith("web_")
+      || t.startsWith("cms_")
+      || t.contains("banner")
+      || t.contains("slider")
+      || t.contains("page")
+      || t.contains("content");
+  }
+
+  private static List<Map<String, Object>> domainEntities(SemanticCatalog catalog) {
+    List<Map<String, Object>> entities = new ArrayList<>();
+    CatalogTable projects = catalog.table("projects");
+    if (projects != null) {
+      entities.add(Map.of(
+        "entity", "projects",
+        "table", projects.logicalName(),
+        "purpose", "operational construction projects",
+        "count_operation", "count",
+        "reason", "real Laravel operational project table"
+      ));
+    }
+    return List.copyOf(entities);
   }
 
   private static String logicalColumn(String table, String column, Set<String> used) {

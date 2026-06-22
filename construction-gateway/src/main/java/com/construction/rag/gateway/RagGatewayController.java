@@ -11,11 +11,14 @@ import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.server.ServerWebExchange;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Mono;
 
 @RestController
 @Validated
 class RagGatewayController {
+  private static final Logger log = LoggerFactory.getLogger(RagGatewayController.class);
   private static final Set<String> FORBIDDEN_PUBLIC_CONTEXT_KEYS = Set.of(
     "user_context", "userContext", "tenant_id", "tenantId", "project_id", "projectId", "project_ids", "projectIds",
     "roles", "permissions", "admin", "isAdmin", "allowed_schema", "allowedSchema", "database_scope", "databaseScope"
@@ -150,12 +153,18 @@ class RagGatewayController {
   private Mono<Object> finishApiKeyDecision(RagClient client, Object decision, Map<String, Object> normalized) {
     if (!(decision instanceof Map<?, ?> map)) return Mono.just(decision);
     Object type = map.get("type");
-    if (!"tool_calls".equals(type)) return Mono.just(decision);
+    if (!"tool_calls".equals(type)) {
+      log.info("api_key_chat route={} intent=ai_non_database selected_table=none operation=none reason=ai_decision_type client={}", type, client.clientName());
+      return Mono.just(decision);
+    }
     Object callsObject = map.get("tool_calls");
     if (!(callsObject instanceof List<?> calls) || calls.isEmpty()) throw new IllegalArgumentException("AI tool call is missing");
     Object first = calls.getFirst();
     if (!(first instanceof Map<?, ?> toolCall)) throw new IllegalArgumentException("AI tool call is malformed");
     if (!"database_query".equals(String.valueOf(toolCall.get("tool")))) throw new IllegalArgumentException("AI requested a non-allowlisted tool");
+    Map<?, ?> plan = toolCall.get("plan") instanceof Map<?, ?> p ? p : Map.of();
+    log.info("api_key_chat route=database_query intent=ai_structured selected_table={} operation={} reason=validated_tool_plan client={}",
+      plan.get("table"), plan.get("operation"), client.clientName());
     return databaseQueries.execute(client, toolCall)
       .flatMap(result -> {
         Object toolCallId = toolCall.get("id");

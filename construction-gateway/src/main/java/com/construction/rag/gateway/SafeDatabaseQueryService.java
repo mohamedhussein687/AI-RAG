@@ -9,12 +9,15 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import javax.sql.DataSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 @Component
 class SafeDatabaseQueryService {
+  private static final Logger log = LoggerFactory.getLogger(SafeDatabaseQueryService.class);
   private static final int DEFAULT_MAX_LIMIT = 20;
 
   private final ClientDataSourceManager dataSources;
@@ -43,6 +46,7 @@ class SafeDatabaseQueryService {
     String where = buildWhere(filters, catalogTable, params);
     int limit = limit(plan.get("limit"));
     String sql = buildSql(operation, plan, catalogTable, where, limit);
+    log.info("safe_database_query operation={} selected_table={} physical_table={} reason=validated_catalog_plan", operation, table, catalogTable.physicalName());
     DataSource dataSource = dataSources.dataSource(client);
     try (Connection connection = dataSource.getConnection()) {
       connection.setReadOnly(true);

@@ -37,6 +37,30 @@ def invoice_catalog():
     }
 
 
+def project_catalog_with_cms_table():
+    return {
+        "catalog_version": 3,
+        "schema_hash": "test",
+        "domain_entities": [
+            {"entity": "projects", "table": "projects", "purpose": "operational construction projects", "count_operation": "count"}
+        ],
+        "tables_index": [
+            {"name": "about_us", "allowed_operations": ["count", "list"]},
+            {"name": "projects", "allowed_operations": ["count", "list", "group_count"]},
+        ],
+        "tables": [
+            {
+                "name": "projects",
+                "allowed_operations": ["count", "list", "group_count"],
+                "columns": [
+                    {"name": "status", "type": "string", "operations": ["filter", "group"], "enum_values": ["waiting"]},
+                    {"name": "created_at", "type": "date", "operations": ["filter", "sort", "group"], "enum_values": []},
+                ],
+            }
+        ],
+    }
+
+
 def qwen_count_invoices(*_args, **_kwargs):
     return {
         "type": "tool_calls",
@@ -84,6 +108,40 @@ def test_identity_question_is_handled_by_qwen(client, auth_headers, monkeypatch)
     data = response.json()
     assert data["type"] == "final_answer"
     assert data["answer"].startswith("أنا مساعد ORBIT AI")
+
+
+def test_small_talk_question_is_qwen_final_answer_without_database_query(client, auth_headers, monkeypatch):
+    async def fake_chat_json(self, messages):
+        return {
+            "type": "final_answer",
+            "answer": "أنا بخير، جاهز أساعدك في بيانات مشروع ORBIT.",
+            "display": {"type": "text", "data": {}},
+            "sources": [],
+        }
+
+    monkeypatch.setattr(LlmClient, "chat_json", fake_chat_json)
+    response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("هل انت بخير؟", semantic_catalog=project_catalog_with_cms_table()))
+    assert response.status_code == 200
+    data = response.json()
+    assert data["type"] == "final_answer"
+    assert "tool_calls" not in data
+    assert "بخير" in data["answer"]
+
+
+def test_project_count_uses_authoritative_projects_table_not_about_us(client, auth_headers, monkeypatch):
+    async def should_not_call_qwen(self, messages):
+        raise AssertionError("project_count guard should run before LLM table selection")
+
+    monkeypatch.setattr(LlmClient, "chat_json", should_not_call_qwen)
+    for question in ["كم عدد المشاريع؟", "عدد المشاريع"]:
+        response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload(question, semantic_catalog=project_catalog_with_cms_table()))
+        assert response.status_code == 200
+        data = response.json()
+        assert data["type"] == "tool_calls"
+        plan = data["tool_calls"][0]["plan"]
+        assert plan["operation"] == "count"
+        assert plan["table"] == "projects"
+        assert plan["table"] != "about_us"
 
 
 def test_equivalent_invoice_questions_generate_same_plan(client, auth_headers, monkeypatch):
@@ -134,3 +192,13 @@ def test_no_raw_sql_can_appear_in_agent_decisions(client, auth_headers):
     assert "raw_sql" not in text
     assert "select " not in text
     assert " query" not in text
+
+
+def test_unknown_business_question_still_returns_safe_unsupported(client, auth_headers, monkeypatch):
+    async def fake_chat_json(self, messages):
+        return {"type": "unsupported", "answer": "لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."}
+
+    monkeypatch.setattr(LlmClient, "chat_json", fake_chat_json)
+    response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("كم عدد العقود المؤرشفة؟", semantic_catalog=project_catalog_with_cms_table()))
+    assert response.status_code == 200
+    assert response.json()["type"] == "unsupported"

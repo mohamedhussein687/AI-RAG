@@ -220,6 +220,24 @@ class GatewayAuthenticationTest {
     }
   }
 
+  @Test
+  void catalogPromptExcludesDisabledCmsTablesAndIncludesProjectDomainMapping() {
+    org.springframework.jdbc.core.JdbcTemplate jdbc = Mockito.mock(org.springframework.jdbc.core.JdbcTemplate.class);
+    SemanticCatalogService service = new SemanticCatalogService(jdbc, null, JSON);
+    SemanticCatalog catalog = new SemanticCatalog("orbit", 3, "now", "hash", true, List.of(
+      new CatalogTable("about_us", "about_us", "about u", List.of(), List.of("about_us"), List.of(), List.of("count"), false, 1),
+      new CatalogTable("projects", "projects", "project", List.of("مشروع", "مشاريع"), List.of("projects", "project"),
+        List.of(new CatalogColumn("status", "project_status", "string", true, List.of("filter", "group"), List.of("waiting"), false, true)),
+        List.of("count", "group_count"), true, 1757)
+    ));
+
+    Map<String, Object> prompt = service.promptSummary(catalog);
+
+    assertThat(prompt.toString()).contains("domain_entities");
+    assertThat(prompt.toString()).contains("projects");
+    assertThat(prompt.toString()).doesNotContain("about_us");
+  }
+
   private static BearerTokenFilter filter(Jwt jwt) {
     GatewayProperties props = props("http://ai", "internal");
     ReactiveJwtDecoder decoder = token -> Mono.just(jwt);
