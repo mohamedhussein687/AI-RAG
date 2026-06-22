@@ -3,6 +3,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 DisplayType = Literal["text", "metric", "table", "answer_with_sources", "mixed", "clarification"]
 DbOperation = Literal["count", "list", "select", "details", "sum", "avg", "min", "max", "group_count"]
+DecisionRoute = Literal["conversational", "database_query", "rag_search", "unsupported", "clarification", "forbidden"]
 
 
 class StrictModel(BaseModel):
@@ -125,11 +126,17 @@ class FinalAnswerDecision(StrictModel):
     answer: str
     display: Display = Field(default_factory=lambda: Display(type="text"))
     sources: list[Source] = Field(default_factory=list)
+    route: DecisionRoute = "conversational"
+    requires_database: bool = False
+    requires_rag: bool = False
 
 
 class ClarificationDecision(StrictModel):
     type: Literal["clarification"]
     question: str
+    route: DecisionRoute = "clarification"
+    requires_database: bool = False
+    requires_rag: bool = False
 
 
 class ToolCallsDecision(StrictModel):
@@ -137,16 +144,25 @@ class ToolCallsDecision(StrictModel):
     tool_calls: list[ToolCall]
     local_rag_results: list[RagChunk] = Field(default_factory=list)
     final_answer_instruction: str
+    route: DecisionRoute = "database_query"
+    requires_database: bool = True
+    requires_rag: bool = False
 
 
 class ForbiddenDecision(StrictModel):
     type: Literal["forbidden"]
     answer: str = "لا أستطيع الوصول إلى بيانات حساسة أو محظورة."
+    route: DecisionRoute = "forbidden"
+    requires_database: bool = False
+    requires_rag: bool = False
 
 
 class UnsupportedDecision(StrictModel):
     type: Literal["unsupported"]
     answer: str = "لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."
+    route: DecisionRoute = "unsupported"
+    requires_database: bool = False
+    requires_rag: bool = False
 
 
 AgentDecision = Annotated[FinalAnswerDecision | ClarificationDecision | ToolCallsDecision | ForbiddenDecision | UnsupportedDecision, Field(discriminator="type")]

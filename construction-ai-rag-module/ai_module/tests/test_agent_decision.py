@@ -167,6 +167,32 @@ def test_small_talk_question_is_qwen_final_answer_without_database_query(client,
     assert data["type"] == "final_answer"
     assert "tool_calls" not in data
     assert "بخير" in data["answer"]
+    assert data["route"] == "conversational"
+    assert data["requires_database"] is False
+
+
+def test_conversational_messages_are_routed_without_database_or_llm(client, auth_headers, monkeypatch):
+    async def should_not_call_qwen(self, messages):
+        raise AssertionError("conversational route should not call LLM or database planning")
+
+    monkeypatch.setattr(LlmClient, "chat_json", should_not_call_qwen)
+    cases = {
+        "شكرا": "العفو",
+        "تمام": "تمام",
+        "هل انت بخير؟": "بخير",
+        "السلام عليكم": "وعليكم السلام",
+        "مع السلامة": "مع السلامة",
+    }
+    for message, expected in cases.items():
+        response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload(message, semantic_catalog=project_catalog_with_cms_table()))
+        assert response.status_code == 200
+        data = response.json()
+        assert data["type"] == "final_answer"
+        assert data["route"] == "conversational"
+        assert data["requires_database"] is False
+        assert data["requires_rag"] is False
+        assert "tool_calls" not in data
+        assert expected in data["answer"]
 
 
 def test_project_count_uses_authoritative_projects_table_not_about_us(client, auth_headers, monkeypatch):
@@ -374,3 +400,34 @@ def test_unknown_business_question_still_returns_safe_unsupported(client, auth_h
     response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("كم عدد العقود المؤرشفة؟", semantic_catalog=project_catalog_with_cms_table()))
     assert response.status_code == 200
     assert response.json()["type"] == "unsupported"
+
+
+def test_normal_inputs_never_return_500_when_planner_raises(client, auth_headers, monkeypatch):
+    async def broken_chat_json(self, messages):
+        raise RuntimeError("simulated planner crash")
+
+    monkeypatch.setattr(LlmClient, "chat_json", broken_chat_json)
+    messages = [
+        "اعمل لي قهوة",
+        "ما سعر الدولار؟",
+        "كم فاتورة موجودة؟",
+    ]
+    for message in messages:
+        response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload(message, semantic_catalog=invoice_catalog()))
+        assert response.status_code == 200
+        data = response.json()
+        assert data["type"] == "unsupported"
+        assert data["route"] == "unsupported"
+        assert "answer" in data
+
+
+def test_invalid_llm_output_returns_valid_json_unsupported(client, auth_headers, monkeypatch):
+    async def invalid_chat_json(self, messages):
+        return {"type": "tool_calls", "tool_calls": [{"id": "db_1", "tool": "database_query", "plan": {"operation": "drop", "table": "projects"}}]}
+
+    monkeypatch.setattr(LlmClient, "chat_json", invalid_chat_json)
+    response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("كم فاتورة موجودة؟", semantic_catalog=invoice_catalog()))
+    assert response.status_code == 200
+    data = response.json()
+    assert data["type"] == "unsupported"
+    assert data["route"] == "unsupported"

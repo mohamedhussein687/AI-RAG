@@ -28,6 +28,11 @@ PROJECT_DETAIL_TERMS = ("معلومات", "تفاصيل", "بيانات", "detai
 CODE_INDICATOR_TERMS = ("صاحب الكود", "صاخب الكود", "بالكود", "كود المشروع", "رقم المشروع", "project code")
 LATEST_TERMS = ("اخر", "آخر", "latest", "last", "newest")
 ADDED_TERMS = ("اضافته", "اضافتة", "مضاف", "added", "created")
+THANKS_TERMS = ("شكرا", "شكرًا", "متشكر", "تسلم", "thanks", "thank you")
+OK_TERMS = ("تمام", "حاضر", "اوكي", "أوكي", "ok", "okay")
+GREETING_TERMS = ("السلام عليكم", "مرحبا", "اهلا", "أهلا", "hello", "hi")
+GOODBYE_TERMS = ("مع السلامه", "مع السلامة", "باي", "bye", "goodbye")
+WELLBEING_TERMS = ("هل انت بخير", "عامل ايه", "ازيك", "إزيك", "how are you")
 log = logging.getLogger(__name__)
 
 
@@ -38,8 +43,17 @@ class DecisionService:
         self.llm = LlmClient(settings)
 
     async def decide(self, request: AgentDecideRequest):
+        try:
+            return await self._decide_core(request)
+        except Exception as exc:
+            return self._safe_decision_fallback(request, exc)
+
+    async def _decide_core(self, request: AgentDecideRequest):
         text = request.message.lower()
         arabic = prefer_arabic(request.message, request.locale)
+        conversational = self._conversational_guard(request)
+        if conversational:
+            return conversational
         if self._has_database_catalog(request):
             guarded = self._deterministic_database_guard(request)
             if guarded:
@@ -87,6 +101,68 @@ class DecisionService:
 
         question = "هل يمكنك توضيح البيانات أو المستندات المطلوبة؟" if arabic else "Can you clarify what data or documents you need?"
         return validate_decision(ClarificationDecision(type="clarification", question=question).model_dump())
+
+    def _safe_decision_fallback(self, request: AgentDecideRequest, exc: Exception):
+        normalized = self._normalize(request.message)
+        log.exception(
+            "agent_decision route=unsupported intent=decision_pipeline_error selected_table=none operation=none normalized_message=%s error_class=%s",
+            normalized[:300],
+            exc.__class__.__name__,
+        )
+        answer = "لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."
+        return validate_decision(UnsupportedDecision(type="unsupported", answer=answer).model_dump())
+
+    def _conversational_guard(self, request: AgentDecideRequest):
+        text = self._normalize(request.message)
+        answer = None
+        kind = None
+        if self._only_conversation(text, THANKS_TERMS):
+            kind = "thanks"
+            answer = "العفو، تحت أمرك."
+        elif self._only_conversation(text, GREETING_TERMS):
+            kind = "greeting"
+            answer = "وعليكم السلام، أهلاً بك. أقدر أساعدك في قراءة وتحليل بيانات مشروع ORBIT حسب الصلاحيات المتاحة."
+        elif self._only_conversation(text, OK_TERMS):
+            kind = "ack"
+            answer = "تمام، تحت أمرك."
+        elif self._only_conversation(text, GOODBYE_TERMS):
+            kind = "goodbye"
+            answer = "مع السلامة، تحت أمرك في أي وقت."
+        elif self._only_conversation(text, WELLBEING_TERMS):
+            kind = "wellbeing"
+            answer = "أنا بخير، وجاهز أساعدك في بيانات مشروع ORBIT."
+        if answer is None:
+            return None
+        log.info(
+            "agent_decision route=conversational intent=%s selected_table=none operation=none normalized_message=%s reason=conversation_route_guard",
+            kind,
+            text[:300],
+        )
+        return validate_decision(
+            FinalAnswerDecision(
+                type="final_answer",
+                answer=answer,
+                display=Display(type="text", data={"conversation_type": kind}),
+                sources=[],
+                route="conversational",
+                requires_database=False,
+                requires_rag=False,
+            ).model_dump()
+        )
+
+    def _only_conversation(self, text: str, terms: tuple[str, ...]) -> bool:
+        if not any(self._normalize(term) in text for term in terms):
+            return False
+        business_markers = PROJECT_TERMS + COUNT_TERMS + PROJECT_DETAIL_TERMS + DELAY_REPORT_TERMS + DELIVERY_TERMS + DOC_TERMS
+        return not any(self._contains_normalized_term(text, term) for term in business_markers)
+
+    def _contains_normalized_term(self, text: str, term: str) -> bool:
+        normalized = self._normalize(term).strip()
+        if not normalized:
+            return False
+        if len(normalized) <= 2 or " " not in normalized:
+            return re.search(rf"(?<!\w){re.escape(normalized)}(?!\w)", text) is not None
+        return normalized in text
 
     def _has_database_catalog(self, request: AgentDecideRequest) -> bool:
         return any(t.name == "database_query" for t in request.external_tools) and (
