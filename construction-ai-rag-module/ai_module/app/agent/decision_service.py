@@ -363,6 +363,9 @@ class DecisionService:
         operator_aliases = {
             "=": "eq",
             "==": "eq",
+            "equal": "eq",
+            "equals": "eq",
+            "is": "eq",
             "!=": "ne",
             "<>": "ne",
             ">": "gt",
