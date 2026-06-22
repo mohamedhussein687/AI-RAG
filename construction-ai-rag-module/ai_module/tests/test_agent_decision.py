@@ -39,7 +39,7 @@ def invoice_catalog():
 
 def project_catalog_with_cms_table():
     return {
-        "catalog_version": 4,
+        "catalog_version": 6,
         "schema_hash": "test",
         "domain_entities": [
             {
@@ -68,16 +68,25 @@ def project_catalog_with_cms_table():
                     "display_fields": ["title", "project_code", "project_serial", "status", "planned_delivery_date", "actual_delivery_date", "updated_at"],
                     "default_limit": 1,
                 },
+                "latest_project": {
+                    "enabled": True,
+                    "intent": "latest_project",
+                    "operation": "select",
+                    "table": "projects",
+                    "order_field": "created_at",
+                    "display_fields": ["title", "project_code", "project_serial", "status", "created_at", "updated_at"],
+                    "default_limit": 1,
+                },
             }
         ],
         "tables_index": [
             {"name": "about_us", "allowed_operations": ["count", "list"]},
-            {"name": "projects", "allowed_operations": ["count", "list", "select", "group_count"]},
+            {"name": "projects", "allowed_operations": ["count", "list", "select", "details", "group_count"]},
         ],
         "tables": [
             {
                 "name": "projects",
-                "allowed_operations": ["count", "list", "select", "group_count"],
+                "allowed_operations": ["count", "list", "select", "details", "group_count"],
                 "columns": [
                     {"name": "status", "type": "string", "operations": ["filter", "group"], "enum_values": ["waiting"]},
                     {"name": "title", "type": "string", "operations": ["filter", "sort"], "enum_values": []},
@@ -225,6 +234,46 @@ def test_project_details_questions_use_projects_lookup_not_about_us(client, auth
         assert plan["lookup_value"] == "test60"
         assert plan["lookup_fields"] == ["title", "project_code", "project_serial"]
         assert plan["limit"] == 1
+
+
+def test_latest_project_questions_use_projects_created_at_not_about_us(client, auth_headers, monkeypatch):
+    async def should_not_call_qwen(self, messages):
+        raise AssertionError("latest_project guard should run before LLM table selection")
+
+    monkeypatch.setattr(LlmClient, "chat_json", should_not_call_qwen)
+    questions = [
+        "ما هو اخر مشروع تم اضافتة",
+        "ما هو آخر مشروع تم إضافته",
+        "اخر مشروع مضاف",
+        "latest project",
+    ]
+    for question in questions:
+        response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload(question, semantic_catalog=project_catalog_with_cms_table()))
+        assert response.status_code == 200
+        data = response.json()
+        assert data["type"] == "tool_calls"
+        plan = data["tool_calls"][0]["plan"]
+        assert plan["intent"] == "latest_project"
+        assert plan["operation"] == "select"
+        assert plan["table"] == "projects"
+        assert plan["table"] != "about_us"
+        assert plan["filters"] == []
+        assert plan["order_by"] == {"column": "created_at", "direction": "desc"}
+        assert plan["limit"] == 1
+
+
+def test_latest_project_missing_mapping_returns_structured_unsupported_not_500(client, auth_headers, monkeypatch):
+    async def should_not_call_qwen(self, messages):
+        raise AssertionError("latest_project guard should return unsupported before LLM")
+
+    monkeypatch.setattr(LlmClient, "chat_json", should_not_call_qwen)
+    catalog = project_catalog_with_cms_table()
+    catalog["domain_entities"][0]["latest_project"] = {"enabled": False, "missing_fields": ["created_at_or_sequential_id"]}
+    response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("ما هو اخر مشروع تم اضافتة", semantic_catalog=catalog))
+    assert response.status_code == 200
+    data = response.json()
+    assert data["type"] == "unsupported"
+    assert "لا يوجد حقل مناسب" in data["answer"]
 
 
 def test_equivalent_invoice_questions_generate_same_plan(client, auth_headers, monkeypatch):

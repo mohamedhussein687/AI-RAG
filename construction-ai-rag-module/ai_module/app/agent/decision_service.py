@@ -25,6 +25,8 @@ COUNT_TERMS = ("كم", "عدد", "count", "how many", "total")
 DELAY_REPORT_TERMS = ("متاخر", "متاخرين", "متاخره", "تأخير", "تاخير", "delayed", "late")
 DELIVERY_TERMS = ("تسليم", "delivery", "deadline", "end date")
 PROJECT_DETAIL_TERMS = ("معلومات", "تفاصيل", "details", "detail", "info", "information")
+LATEST_TERMS = ("اخر", "آخر", "latest", "last", "newest")
+ADDED_TERMS = ("اضافته", "اضافتة", "مضاف", "added", "created")
 log = logging.getLogger(__name__)
 
 
@@ -40,14 +42,22 @@ class DecisionService:
         if self._has_database_catalog(request):
             guarded = self._deterministic_database_guard(request)
             if guarded:
-                plan = guarded["tool_calls"][0]["plan"]
-                log.info(
-                    "agent_decision route=database_query intent=%s selected_table=%s operation=%s reason=%s",
-                    guarded.get("intent"),
-                    plan.get("table"),
-                    plan.get("operation"),
-                    guarded.get("reason"),
-                )
+                if guarded.get("type") == "tool_calls":
+                    plan = guarded["tool_calls"][0]["plan"]
+                    log.info(
+                        "agent_decision route=database_query intent=%s selected_table=%s operation=%s reason=%s",
+                        guarded.get("intent"),
+                        plan.get("table"),
+                        plan.get("operation"),
+                        guarded.get("reason"),
+                    )
+                else:
+                    log.info(
+                        "agent_decision route=%s intent=%s selected_table=none operation=none reason=%s",
+                        guarded.get("type"),
+                        guarded.get("intent", "guarded_non_tool"),
+                        guarded.get("reason", "deterministic_domain_entity_guard"),
+                    )
                 guarded.pop("intent", None)
                 guarded.pop("reason", None)
                 return validate_decision(guarded)
@@ -133,7 +143,13 @@ class DecisionService:
                 call.setdefault("id", f"db_{i}")
                 call["tool"] = "database_query"
                 plan = call.get("plan", {})
-                plan["limit"] = min(int(plan.get("limit", request.rules.max_rows)), 20)
+                if isinstance(plan.get("order_by"), list):
+                    order_by = plan.get("order_by")
+                    plan["order_by"] = order_by[0] if order_by else None
+                if isinstance(plan.get("order_by"), dict) and "field" in plan["order_by"] and "column" not in plan["order_by"]:
+                    plan["order_by"]["column"] = plan["order_by"].pop("field")
+                limit_value = plan.get("limit") or request.rules.max_rows
+                plan["limit"] = min(int(limit_value), 20)
                 log.info(
                     "agent_decision route=database_query intent=llm_structured selected_table=%s operation=%s reason=qwen_plan",
                     plan.get("table"),
@@ -145,9 +161,9 @@ class DecisionService:
             log.info("agent_decision route=%s intent=llm_non_tool selected_table=none operation=none reason=qwen_decision", decision.get("type"))
         try:
             return validate_decision(decision)
-        except ValidationError as exc:
-            reason = exc.errors()[0].get("type") if exc.errors() else "validation_error"
-            log.info("agent_decision route=unsupported intent=invalid_structured_plan selected_table=none operation=none reason=%s", reason)
+        except (ValidationError, TypeError, ValueError, AttributeError) as exc:
+            reason = exc.errors()[0].get("type") if isinstance(exc, ValidationError) and exc.errors() else exc.__class__.__name__
+            log.exception("agent_decision route=unsupported intent=invalid_structured_plan selected_table=none operation=none reason=%s", reason)
             return validate_decision(UnsupportedDecision(type="unsupported").model_dump())
 
     async def _qwen_route_decision(self, request: AgentDecideRequest, arabic: bool):
@@ -193,6 +209,9 @@ class DecisionService:
         return validate_decision(UnsupportedDecision(type="unsupported", answer=answer).model_dump())
 
     def _deterministic_database_guard(self, request: AgentDecideRequest):
+        latest = self._latest_project_guard(request)
+        if latest:
+            return latest
         details = self._project_details_guard(request)
         if details:
             return details
@@ -214,6 +233,42 @@ class DecisionService:
                     "id": "db_1",
                     "tool": "database_query",
                     "plan": {"operation": "count", "table": table, "filters": [], "limit": min(request.rules.max_rows, 20)},
+                }
+            ],
+            "local_rag_results": [],
+            "final_answer_instruction": self._instruction(prefer_arabic(request.message, request.locale)),
+        }
+
+    def _latest_project_guard(self, request: AgentDecideRequest):
+        if not self._is_latest_project(request.message):
+            return None
+        latest = self._domain_report(request.semantic_catalog, "projects", "latest_project")
+        if not latest or not latest.get("enabled"):
+            missing = ", ".join(latest.get("missing_fields", [])) if isinstance(latest, dict) else "latest_project"
+            log.info("agent_decision route=unsupported intent=latest_project selected_table=projects operation=select reason=missing_latest_mapping missing=%s", missing)
+            return {"type": "unsupported", "answer": "لا يوجد حقل مناسب لتحديد آخر مشروع تم إضافته."}
+        table = latest.get("table")
+        order_field = latest.get("order_field")
+        display_fields = [field for field in latest.get("display_fields", []) if isinstance(field, str)]
+        if not table or not order_field:
+            return {"type": "unsupported", "answer": "لا يوجد حقل مناسب لتحديد آخر مشروع تم إضافته."}
+        return {
+            "type": "tool_calls",
+            "intent": "latest_project",
+            "reason": "deterministic_domain_entity_guard",
+            "tool_calls": [
+                {
+                    "id": "db_1",
+                    "tool": "database_query",
+                    "plan": {
+                        "intent": "latest_project",
+                        "operation": "select",
+                        "table": table,
+                        "columns": display_fields,
+                        "filters": [],
+                        "order_by": {"column": order_field, "direction": "desc"},
+                        "limit": 1,
+                    },
                 }
             ],
             "local_rag_results": [],
@@ -316,6 +371,12 @@ class DecisionService:
         return any(term in text for term in PROJECT_TERMS) and any(term in text for term in DELAY_REPORT_TERMS) and (
             any(term in text for term in DELIVERY_TERMS) or "اخر" in text or "آخر" in message
         )
+
+    def _is_latest_project(self, message: str) -> bool:
+        text = self._normalize(message)
+        if not any(term in text for term in PROJECT_TERMS) or not any(term in text for term in LATEST_TERMS):
+            return False
+        return any(term in text for term in ADDED_TERMS) or "latest" in text or "last" in text or "newest" in text
 
     def _domain_table(self, catalog: dict, entity: str) -> str | None:
         for item in catalog.get("domain_entities", []):

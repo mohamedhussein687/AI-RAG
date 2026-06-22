@@ -1,4 +1,5 @@
 from uuid import uuid4
+import logging
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from app.auth import require_module_token
@@ -17,6 +18,7 @@ from app.storage.postgres import health as postgres_health
 
 configure_logging()
 app = FastAPI(title="Construction AI RAG Module")
+log = logging.getLogger(__name__)
 
 
 @app.middleware("http")
@@ -29,7 +31,9 @@ async def request_id_middleware(request: Request, call_next):
 
 @app.exception_handler(Exception)
 async def unhandled(request: Request, exc: Exception):
-    return JSONResponse(status_code=500, content={"error": {"code": "internal_error", "message": "Internal server error"}, "request_id": getattr(request.state, "request_id", "unknown")})
+    request_id = getattr(request.state, "request_id", "unknown")
+    log.exception("unhandled_exception request_id=%s path=%s", request_id, request.url.path)
+    return JSONResponse(status_code=500, content={"error": {"code": "internal_error", "message": "Internal server error"}, "request_id": request_id})
 
 
 async def dependency_health(settings: Settings) -> dict[str, str]:

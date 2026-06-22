@@ -30,7 +30,7 @@ class SemanticCatalogService {
   private static final int MAX_TABLES_INDEX_IN_PROMPT = 80;
   private static final int MAX_DETAILED_TABLES_IN_PROMPT = 10;
   private static final int MAX_COLUMNS_IN_PROMPT = 12;
-  private static final int CATALOG_VERSION = 5;
+  private static final int CATALOG_VERSION = 6;
   private static final Set<String> CMS_TABLE_NAMES = Set.of(
     "about_us", "pages", "settings", "banners", "sliders", "menus", "menu_items", "cms_pages", "cms_blocks"
   );
@@ -318,9 +318,34 @@ class SemanticCatalogService {
       if (!delayedReport.isEmpty()) projectEntity.put("delayed_projects_report", delayedReport);
       Map<String, Object> projectDetails = projectDetails(projects);
       if (!projectDetails.isEmpty()) projectEntity.put("project_details", projectDetails);
+      Map<String, Object> latestProject = latestProject(projects);
+      if (!latestProject.isEmpty()) projectEntity.put("latest_project", latestProject);
       entities.add(projectEntity);
     }
     return List.copyOf(entities);
+  }
+
+  private static Map<String, Object> latestProject(CatalogTable projects) {
+    CatalogColumn order = projects.column("created_at");
+    if (order == null) {
+      CatalogColumn id = projects.column("id");
+      if (id != null && "number".equals(id.fieldType()) && id.allowedOperations().contains("sort")) order = id;
+    }
+    if (order == null) return Map.of("enabled", false, "missing_fields", List.of("created_at_or_sequential_id"));
+    List<String> display = new ArrayList<>();
+    for (String candidate : List.of("title", "project_code", "project_serial", "status", "created_at", "updated_at")) {
+      CatalogColumn column = projects.column(candidate);
+      if (column != null) display.add(column.logicalName());
+    }
+    return Map.of(
+      "enabled", true,
+      "intent", "latest_project",
+      "operation", "select",
+      "table", projects.logicalName(),
+      "order_field", order.logicalName(),
+      "display_fields", List.copyOf(display),
+      "default_limit", 1
+    );
   }
 
   private static Map<String, Object> projectDetails(CatalogTable projects) {
