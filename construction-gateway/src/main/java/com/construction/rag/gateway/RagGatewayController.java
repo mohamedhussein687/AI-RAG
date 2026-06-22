@@ -23,10 +23,16 @@ class RagGatewayController {
 
   private final AiModuleClient ai;
   private final SafeDatabaseQueryService databaseQueries;
+  private final SemanticCatalogService catalogs;
+  private final OrbitSemanticPlanner orbitPlanner;
+  private final ArabicDatabaseAnswerFormatter arabicFormatter;
 
-  RagGatewayController(AiModuleClient ai, SafeDatabaseQueryService databaseQueries) {
+  RagGatewayController(AiModuleClient ai, SafeDatabaseQueryService databaseQueries, SemanticCatalogService catalogs, OrbitSemanticPlanner orbitPlanner, ArabicDatabaseAnswerFormatter arabicFormatter) {
     this.ai = ai;
     this.databaseQueries = databaseQueries;
+    this.catalogs = catalogs;
+    this.orbitPlanner = orbitPlanner;
+    this.arabicFormatter = arabicFormatter;
   }
 
   @GetMapping("/health/live") Map<String, String> live() { return Map.of("status", "ok"); }
@@ -81,6 +87,9 @@ class RagGatewayController {
   }
 
   private Mono<Object> apiKeyChat(RagClient client, Map<String, Object> request) {
+    String message = String.valueOf(request.getOrDefault("message", ""));
+    if (orbitPlanner.identityQuestion(message)) return Mono.just(arabicFormatter.identity());
+    SemanticCatalog catalog = catalogs.catalog(client);
     Map<String, Object> normalized = mutableCopy(request);
     normalized.putIfAbsent("conversation_id", "laravel-" + client.clientName());
     normalized.putIfAbsent("locale", "ar");
@@ -92,16 +101,14 @@ class RagGatewayController {
       "roles", List.of("laravel-client"),
       "permissions", List.of("live-data.read")
     ));
-    normalized.put("allowed_schema", Map.of("tables", List.of(Map.of(
-      "name", "projects",
-      "columns", List.of("id", "name", "status"),
-      "allowed_operations", List.of("count")
-    ))));
+    normalized.put("allowed_schema", catalogs.allowedSchema(catalog));
+    normalized.put("semantic_catalog", catalogs.promptSummary(catalog));
     normalized.put("external_tools", List.of(Map.of("name", "database_query")));
     normalized.put("local_tools", List.of());
-    normalized.put("rules", Map.of("return_sql", false, "max_tool_calls", 1, "max_rows", 100, "joins_allowed", false));
+    normalized.put("rules", Map.of("return_sql", false, "max_tool_calls", 1, "max_rows", 20, "joins_allowed", false));
     return ai.post("/api/agent/decide", normalized)
-      .flatMap(decision -> finishApiKeyDecision(client, decision, normalized));
+      .flatMap(decision -> finishApiKeyDecision(client, decision, normalized, catalog))
+      .onErrorResume(ResponseStatusException.class, ignored -> localApiKeyDecision(client, normalized, catalog));
   }
 
   @ExceptionHandler(IllegalArgumentException.class)
@@ -145,31 +152,25 @@ class RagGatewayController {
     return Mono.just(decision);
   }
 
-  private Mono<Object> finishApiKeyDecision(RagClient client, Object decision, Map<String, Object> normalized) {
-    if (!(decision instanceof Map<?, ?> map)) return Mono.just(decision);
+  private Mono<Object> finishApiKeyDecision(RagClient client, Object decision, Map<String, Object> normalized, SemanticCatalog catalog) {
+    if (!(decision instanceof Map<?, ?> map)) return localApiKeyDecision(client, normalized, catalog);
     Object type = map.get("type");
-    if (!"tool_calls".equals(type)) return Mono.just(decision);
+    if (!"tool_calls".equals(type)) return localApiKeyDecision(client, normalized, catalog);
     Object callsObject = map.get("tool_calls");
-    if (!(callsObject instanceof List<?> calls) || calls.isEmpty()) throw new IllegalArgumentException("AI decision did not include an executable tool call");
+    if (!(callsObject instanceof List<?> calls) || calls.isEmpty()) return localApiKeyDecision(client, normalized, catalog);
     Object first = calls.getFirst();
     if (!(first instanceof Map<?, ?> toolCall)) throw new IllegalArgumentException("AI tool call is malformed");
     if (!"database_query".equals(String.valueOf(toolCall.get("tool")))) throw new IllegalArgumentException("AI requested a non-allowlisted tool");
     return databaseQueries.execute(client, toolCall)
-      .flatMap(result -> {
-        Map<String, Object> finalRequest = new LinkedHashMap<>();
-        finalRequest.put("conversation_id", normalized.get("conversation_id"));
-        finalRequest.put("message", normalized.get("message"));
-        finalRequest.put("locale", normalized.get("locale"));
-        finalRequest.put("conversation_history", normalized.get("conversation_history"));
-        finalRequest.put("tool_results", List.of(Map.of(
-          "tool_call_id", String.valueOf(toolCall.get("id")),
-          "tool", "database_query",
-          "result", result
-        )));
-        finalRequest.put("local_rag_results", List.of());
-        finalRequest.put("final_answer_instruction", map.get("final_answer_instruction"));
-        return ai.post("/api/agent/final", finalRequest);
-      });
+      .map(result -> arabicFormatter.answer(String.valueOf(normalized.get("message")), toolCall, result));
+  }
+
+  private Mono<Object> localApiKeyDecision(RagClient client, Map<String, Object> normalized, SemanticCatalog catalog) {
+    String message = String.valueOf(normalized.getOrDefault("message", ""));
+    return orbitPlanner.plan(message, catalog)
+      .map(toolCall -> databaseQueries.execute(client, toolCall)
+        .map(result -> (Object) arabicFormatter.answer(message, toolCall, result)))
+      .orElseGet(() -> Mono.just(arabicFormatter.unsupported("الجدول أو العلاقة أو الحقل المطلوب")));
   }
 
   private TrustedIdentity identity(ServerWebExchange exchange) {

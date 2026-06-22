@@ -28,6 +28,7 @@ class SafeDatabaseQueryServiceTest {
     ResultSet columns = mock(ResultSet.class);
     PreparedStatement statement = mock(PreparedStatement.class);
     ResultSet queryResult = mock(ResultSet.class);
+    SemanticCatalogService catalogs = mock(SemanticCatalogService.class);
     RagClient orbit = new RagClient(7, "orbit", "mysql", "db", 3306, "orbit", "user", "encrypted", "active");
 
     when(manager.dataSource(orbit)).thenReturn(dataSource);
@@ -42,8 +43,13 @@ class SafeDatabaseQueryServiceTest {
     when(statement.executeQuery()).thenReturn(queryResult);
     when(queryResult.next()).thenReturn(true);
     when(queryResult.getLong(1)).thenReturn(0L);
+    when(catalogs.catalog(orbit)).thenReturn(new SemanticCatalog("orbit", 1, "now", "hash", true, List.of(new CatalogTable(
+      "projects", "projects", "project", List.of("مشروع", "مشاريع"), List.of("projects", "project"),
+      List.of(new CatalogColumn("status", "project_status", "string", true, List.of("filter", "group"), List.of("waiting"), false, true)),
+      List.of("count", "group_count"), true, 0
+    ))));
 
-    SafeDatabaseQueryService service = new SafeDatabaseQueryService(manager);
+    SafeDatabaseQueryService service = new SafeDatabaseQueryService(manager, catalogs);
     Map<String, Object> result = service.execute(orbit, Map.of(
       "plan", Map.of(
         "operation", "count",
