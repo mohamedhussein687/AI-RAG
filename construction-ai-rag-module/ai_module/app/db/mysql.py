@@ -27,8 +27,6 @@ async def readonly_mysql_connection(settings: Settings | None = None) -> AsyncIt
             db=settings.mysql_database,
             autocommit=True,
             connect_timeout=settings.mysql_connect_timeout_seconds,
-            read_timeout=settings.mysql_query_timeout_seconds,
-            write_timeout=settings.mysql_query_timeout_seconds,
             cursorclass=aiomysql.DictCursor,
         )
         yield connection
