@@ -10,7 +10,7 @@ from app.db.mysql import readonly_mysql_connection
 from app.db.sql_compiler import compile_select
 from app.db.sql_executor import QueryExecutor
 from app.db.sql_validator import PlanValidationError, validate_plan
-from app.schema.schema_models import QueryFilter, QueryOrderBy, SchemaColumn, SchemaSnapshot, SchemaTable, StructuredQueryPlan
+from app.schema.schema_models import QueryFilter, QueryJoin, QueryOrderBy, SchemaColumn, SchemaForeignKey, SchemaSnapshot, SchemaTable, StructuredQueryPlan
 from app.schemas import (
     AgentDecideRequest,
     AgentDecision,
@@ -120,6 +120,7 @@ class DatabaseChatService:
         filters = [self._filter(item) for item in raw_plan.get("filters") or []]
         order_by = [self._order_by(raw_plan["order_by"])] if isinstance(raw_plan.get("order_by"), dict) else []
         columns = [str(item) for item in (raw_plan.get("columns") or raw_plan.get("fields") or []) if item]
+        joins = [self._join(item) for item in raw_plan.get("joins") or []]
         column = raw_plan.get("column")
         if operation in {"sum", "avg", "min", "max"} and column and not columns:
             columns = [str(column)]
@@ -130,9 +131,22 @@ class DatabaseChatService:
             resolved_tables=[str(raw_plan.get("table") or raw_plan.get("resolved_tables", [""])[0])],
             columns=columns,
             filters=filters,
-            group_by=[str(raw_plan["group_by"])] if raw_plan.get("group_by") else [],
+            joins=joins,
+            group_by=[str(item) for item in raw_plan.get("group_by")] if isinstance(raw_plan.get("group_by"), list) else ([str(raw_plan["group_by"])] if raw_plan.get("group_by") else []),
             order_by=order_by,
             limit=int(raw_plan.get("limit") or self.settings.mysql_max_rows),
+        )
+
+
+    @staticmethod
+    def _join(item: Any) -> QueryJoin:
+        if not isinstance(item, dict):
+            raise PlanValidationError("join must be an object")
+        return QueryJoin(
+            table=str(item.get("table") or ""),
+            left_column=str(item.get("left_column") or item.get("left") or ""),
+            right_column=str(item.get("right_column") or item.get("right") or ""),
+            type=str(item.get("type") or "inner").lower(),
         )
 
     @staticmethod
@@ -194,6 +208,16 @@ class DatabaseChatService:
             classification=classification,  # type: ignore[arg-type]
             approximate_row_count=table.get("approximate_row_count") or table.get("approxRows"),
             primary_key_columns=[str(item) for item in table.get("primary_key_columns") or table.get("primaryKey") or []],
+            foreign_keys=[
+                SchemaForeignKey(
+                    column=str(fk.get("column") or fk.get("from_column") or ""),
+                    referenced_table=str(fk.get("referenced_table") or fk.get("referenced_table_name") or fk.get("to_table") or ""),
+                    referenced_column=str(fk.get("referenced_column") or fk.get("referenced_column_name") or fk.get("to_column") or "id"),
+                    constraint_name=fk.get("constraint_name"),
+                )
+                for fk in table.get("foreign_keys") or []
+                if isinstance(fk, dict)
+            ],
             columns=columns,
         )
 

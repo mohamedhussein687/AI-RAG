@@ -20,9 +20,13 @@ class VectorPoint:
 class InMemoryQdrantService:
     def __init__(self):
         self.points: dict[str, VectorPoint] = {}
+        self.collections: dict[str, dict[str, VectorPoint]] = {}
 
     async def upsert(self, point_id: str, vector: list[float], payload: dict[str, Any]) -> None:
-        self.points[point_id] = VectorPoint(point_id, vector, payload)
+        collection = str(payload.get("target_collection") or payload.get("collection") or "default")
+        point = VectorPoint(point_id, vector, payload)
+        self.points[point_id] = point
+        self.collections.setdefault(collection, {})[point_id] = point
 
     async def upsert_many(self, points: list[tuple[str, list[float], dict[str, Any]]]) -> None:
         for point_id, vector, payload in points:
@@ -40,8 +44,10 @@ class InMemoryQdrantService:
                 point.payload["is_active"] = False
 
     async def search(self, query_vector: list[float], user_context: UserContext, filters: RagFilters, limit: int) -> list[tuple[dict[str, Any], float]]:
+        collection = getattr(filters, "collection", None)
+        source = self.collections.get(collection, {}) if collection else self.points
         scored: list[tuple[dict[str, Any], float]] = []
-        for point in self.points.values():
+        for point in source.values():
             payload = point.payload
             if not is_authorized_payload(payload, user_context):
                 continue
@@ -64,16 +70,39 @@ class QdrantService:
         self.client = AsyncQdrantClient(url=settings.qdrant_url, timeout=settings.http_timeout_seconds)
         self.collection = settings.qdrant_collection
 
-    async def ensure_collection(self) -> None:
-        exists = await self.client.collection_exists(self.collection)
+    def collection_for_payload(self, payload: dict[str, Any] | None = None) -> str:
+        payload = payload or {}
+        explicit = payload.get("target_collection") or payload.get("collection")
+        if explicit:
+            return str(explicit)
+        source_type = str(payload.get("source_type") or "")
+        if source_type == "business_knowledge":
+            return self.settings.qdrant_business_collection
+        if source_type == "database_schema":
+            return self.settings.qdrant_schema_collection
+        return self.collection
+
+    def collection_for_filters(self, filters: RagFilters) -> str:
+        explicit = getattr(filters, "collection", None)
+        if explicit:
+            return str(explicit)
+        if filters.document_types == ["business_knowledge"]:
+            return self.settings.qdrant_business_collection
+        if filters.document_types == ["database_schema"]:
+            return self.settings.qdrant_schema_collection
+        return self.collection
+
+    async def ensure_collection(self, collection: str | None = None) -> None:
+        collection_name = collection or self.collection
+        exists = await self.client.collection_exists(collection_name)
         if not exists:
             await self.client.create_collection(
-                collection_name=self.collection,
+                collection_name=collection_name,
                 vectors_config=models.VectorParams(size=self.settings.embedding_dimension, distance=models.Distance.COSINE),
             )
         for field in ("tenant_id", "project_id", "document_id", "document_version", "source_type", "status", "index_version", "is_active"):
             try:
-                await self.client.create_payload_index(self.collection, field_name=field, field_schema=models.PayloadSchemaType.KEYWORD)
+                await self.client.create_payload_index(collection_name, field_name=field, field_schema=models.PayloadSchemaType.KEYWORD)
             except Exception:
                 pass
             
@@ -81,12 +110,16 @@ class QdrantService:
         await self.upsert_many([(point_id, vector, payload)])
 
     async def upsert_many(self, points: list[tuple[str, list[float], dict[str, Any]]]) -> None:
-        await self.ensure_collection()
-        await self.client.upsert(
-            collection_name=self.collection,
-            points=[models.PointStruct(id=qdrant_point_id(point_id), vector=vector, payload=payload) for point_id, vector, payload in points],
-            wait=True,
-        )
+        grouped: dict[str, list[tuple[str, list[float], dict[str, Any]]]] = {}
+        for point_id, vector, payload in points:
+            grouped.setdefault(self.collection_for_payload(payload), []).append((point_id, vector, payload))
+        for collection, items in grouped.items():
+            await self.ensure_collection(collection)
+            await self.client.upsert(
+                collection_name=collection,
+                points=[models.PointStruct(id=qdrant_point_id(point_id), vector=vector, payload=payload) for point_id, vector, payload in items],
+                wait=True,
+            )
 
     async def delete(self, point_ids: list[str]) -> None:
         await self.client.delete(self.collection, points_selector=models.PointIdsList(points=[qdrant_point_id(point_id) for point_id in point_ids]), wait=True)
@@ -101,7 +134,8 @@ class QdrantService:
         )
 
     async def search(self, query_vector: list[float], user_context: UserContext, filters: RagFilters, limit: int) -> list[tuple[dict[str, Any], float]]:
-        await self.ensure_collection()
+        collection = self.collection_for_filters(filters)
+        await self.ensure_collection(collection)
         must = [models.FieldCondition(key="tenant_id", match=models.MatchValue(value=user_context.tenant_id))]
         if filters.project_id:
             must.append(models.FieldCondition(key="project_id", match=models.MatchValue(value=filters.project_id)))
@@ -111,7 +145,7 @@ class QdrantService:
         must.append(models.FieldCondition(key="is_active", match=models.MatchValue(value=True)))
         must.append(models.FieldCondition(key="index_version", match=models.MatchValue(value=self.settings.index_version)))
         qfilter = models.Filter(must=must)
-        response = await self.client.query_points(collection_name=self.collection, query=query_vector, query_filter=qfilter, limit=limit, with_payload=True)
+        response = await self.client.query_points(collection_name=collection, query=query_vector, query_filter=qfilter, limit=limit, with_payload=True)
         authorized: list[tuple[dict[str, Any], float]] = []
         for result in response.points:
             payload = dict(result.payload or {})

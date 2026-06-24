@@ -31,6 +31,8 @@ class Settings(BaseSettings):
 
     qdrant_url: str = Field(default="http://qdrant:6333", alias="QDRANT_URL")
     qdrant_collection: str = Field(default="construction_chunks", alias="QDRANT_COLLECTION")
+    qdrant_business_collection: str = Field(default="business_knowledge", alias="QDRANT_BUSINESS_COLLECTION")
+    qdrant_schema_collection: str = Field(default="semantic_catalog", alias="QDRANT_SCHEMA_COLLECTION")
     postgres_url: str = Field(default="postgresql+asyncpg://ai:ai@postgres:5432/ai_rag", alias="POSTGRES_URL")
     index_version: str = Field(default="v1", alias="INDEX_VERSION")
 

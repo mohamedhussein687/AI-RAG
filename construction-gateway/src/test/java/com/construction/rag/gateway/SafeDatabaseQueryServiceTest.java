@@ -122,6 +122,77 @@ class SafeDatabaseQueryServiceTest {
   }
 
   @Test
+  void joinedPlanIsValidatedAndCompiledWithQualifiedColumns() throws Exception {
+    ClientDataSourceManager manager = mock(ClientDataSourceManager.class);
+    DataSource dataSource = mock(DataSource.class);
+    Connection connection = mock(Connection.class);
+    DatabaseMetaData metaData = mock(DatabaseMetaData.class);
+    PreparedStatement statement = mock(PreparedStatement.class);
+    ResultSet queryResult = mock(ResultSet.class);
+    SemanticCatalogService catalogs = mock(SemanticCatalogService.class);
+    RagClient orbit = new RagClient(7, "orbit", "mysql", "db", 3306, "testorbit", "user", "encrypted", "active");
+
+    when(manager.dataSource(orbit)).thenReturn(dataSource);
+    when(dataSource.getConnection()).thenReturn(connection);
+    when(connection.getCatalog()).thenReturn("testorbit");
+    when(connection.getMetaData()).thenReturn(metaData);
+    when(metaData.getTables(eq("testorbit"), any(), any(), any())).thenAnswer(invocation -> {
+      ResultSet rs = mock(ResultSet.class);
+      when(rs.next()).thenReturn(true);
+      return rs;
+    });
+    when(metaData.getColumns(eq("testorbit"), any(), any(), any())).thenAnswer(invocation -> {
+      ResultSet rs = mock(ResultSet.class);
+      when(rs.next()).thenReturn(true);
+      return rs;
+    });
+    String sql = "select t0.title as projects__title, t1.amount as invoices__amount from projects t0 inner join invoices t1 on t0.id = t1.project_id where t1.status = ? order by t1.amount desc limit 20";
+    when(connection.prepareStatement(sql)).thenReturn(statement);
+    when(statement.executeQuery()).thenReturn(queryResult);
+    when(queryResult.next()).thenReturn(true, false);
+    when(queryResult.getObject("projects__title")).thenReturn("Tower A");
+    when(queryResult.getObject("invoices__amount")).thenReturn(1500);
+    when(catalogs.catalog(orbit)).thenReturn(new SemanticCatalog("orbit", 9, "now", "hash", true, List.of(
+      new CatalogTable(
+        "projects", "projects", "project", List.of("مشروع", "مشاريع"), List.of("projects", "project"),
+        List.of(
+          new CatalogColumn("id", "id", "number", false, List.of("filter"), List.of(), false, true),
+          new CatalogColumn("title", "title", "string", true, List.of("filter", "sort"), List.of(), false, true)
+        ),
+        List.of("count", "list", "select"), true, 10
+      ),
+      new CatalogTable(
+        "invoices", "invoices", "invoice", List.of("فاتورة", "فواتير"), List.of("invoices", "invoice"),
+        List.of(
+          new CatalogColumn("project_id", "project_id", "number", false, List.of("filter"), List.of(), false, true),
+          new CatalogColumn("amount", "amount", "number", true, List.of("filter", "sort", "sum"), List.of(), false, true),
+          new CatalogColumn("status", "status", "string", true, List.of("filter", "group"), List.of("paid", "unpaid"), false, true)
+        ),
+        List.of("count", "list", "select", "sum"), true, 40
+      )
+    )));
+
+    SafeDatabaseQueryService service = new SafeDatabaseQueryService(manager, catalogs);
+    Map<String, Object> result = service.execute(orbit, Map.of(
+      "plan", Map.of(
+        "operation", "select",
+        "table", "projects",
+        "columns", List.of("projects.title", "invoices.amount"),
+        "joins", List.of(Map.of("table", "invoices", "left_column", "projects.id", "right_column", "invoices.project_id", "type", "inner")),
+        "filters", List.of(Map.of("column", "invoices.status", "operator", "eq", "value", "unpaid")),
+        "order_by", Map.of("column", "invoices.amount", "direction", "desc"),
+        "limit", 20
+      )
+    )).block();
+
+    assertThat(result).containsEntry("table", "projects");
+    assertThat(result.get("joins")).isEqualTo(List.of("invoices"));
+    assertThat(((List<?>) result.get("rows"))).hasSize(1);
+    verify(statement).setObject(eq(1), eq("unpaid"));
+    verify(connection).prepareStatement(sql);
+  }
+
+  @Test
   void nonSchemaUserAliasIsRejectedBeforeExecution() {
     ClientDataSourceManager manager = mock(ClientDataSourceManager.class);
     SemanticCatalogService catalogs = mock(SemanticCatalogService.class);

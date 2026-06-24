@@ -7,6 +7,8 @@ import logging
 
 from app.common.logging import configure_logging
 from ingestion_worker.restore_backup import RestoreBackupError, run_restore_backup
+from ingestion_worker.schema_catalog_builder import add_schema_catalog_parser, run_schema_catalog
+from ingestion_worker.business_knowledge_commands import add_business_knowledge_parser, run_business_knowledge_ingest
 from ingestion_worker.sync import RagSyncService, run_loop
 from ingestion_worker.smoke_chat import run_smoke_chat
 from ingestion_worker.schema_commands import run_schema_command
@@ -52,6 +54,9 @@ def main() -> None:
     smoke_chat.add_argument("--message", required=True)
     smoke_chat.add_argument("--source", default="construction_mysql")
 
+    add_schema_catalog_parser(subcommands)
+    add_business_knowledge_parser(subcommands)
+
     args = parser.parse_args()
     if args.command == "sync":
         asyncio.run(_sync_once(args.source, args.table, args.mode, args.dry_run))
@@ -72,6 +77,10 @@ def main() -> None:
         raise SystemExit(asyncio.run(run_schema_command("schema-refresh", source=args.source, force=True, as_json=True)))
     elif args.command == "smoke-chat":
         raise SystemExit(run_smoke_chat(args.message, source=args.source))
+    elif args.command == "schema-catalog":
+        raise SystemExit(asyncio.run(run_schema_catalog(args)))
+    elif args.command == "business-knowledge-ingest":
+        raise SystemExit(asyncio.run(run_business_knowledge_ingest(args)))
 
 
 async def _sync_once(source: str | None, table: str | None, mode: str, dry_run: bool) -> None:

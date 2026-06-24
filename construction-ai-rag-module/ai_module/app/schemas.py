@@ -98,6 +98,13 @@ class OrderBy(StrictModel):
     direction: Literal["asc", "desc"] = "asc"
 
 
+class DatabaseJoin(StrictModel):
+    table: str
+    left_column: str
+    right_column: str
+    type: Literal["inner", "left"] = "inner"
+
+
 class DatabaseQueryPlan(StrictModel):
     intent: str | None = None
     entities: list[str] = Field(default_factory=list)
@@ -109,8 +116,9 @@ class DatabaseQueryPlan(StrictModel):
     lookup_value: str | None = None
     lookup_fields: list[str] = Field(default_factory=list)
     filters: list[DatabaseFilter] = Field(default_factory=list)
+    joins: list[DatabaseJoin] = Field(default_factory=list)
     order_by: OrderBy | None = None
-    group_by: str | None = None
+    group_by: str | list[str] | None = None
     limit: int = Field(default=100, ge=1, le=1000)
 
 
@@ -262,6 +270,7 @@ class DocumentIndexResponse(StrictModel):
 class RagFilters(StrictModel):
     document_types: list[str] = Field(default_factory=list)
     project_id: str | None = None
+    collection: str | None = None
 
 
 class RagSearchRequest(StrictModel):

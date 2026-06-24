@@ -227,6 +227,7 @@ class ValidatedQueryPlan(StrictModel):
     table: str
     columns: list[str]
     filters: list[QueryFilter] = Field(default_factory=list)
+    joins: list[QueryJoin] = Field(default_factory=list)
     group_by: list[str] = Field(default_factory=list)
     order_by: list[QueryOrderBy] = Field(default_factory=list)
     limit: int = Field(default=100, ge=1)

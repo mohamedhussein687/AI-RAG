@@ -133,6 +133,7 @@ class SchemaService:
                         "enabled_for_planning": chunk.metadata.get("classification") != "system",
                         "version": snapshot.schema_hash,
                         "is_active": True,
+                        "target_collection": self.settings.qdrant_schema_collection,
                     },
                 )
             )

@@ -124,7 +124,7 @@ class RagGatewayController {
     normalized.put("semantic_catalog", Map.of("client_name", client.clientName(), "schema_hash", schemaHash));
     normalized.put("external_tools", List.of(Map.of("name", "database_query")));
     normalized.put("local_tools", List.of());
-    normalized.put("rules", Map.of("return_sql", false, "max_tool_calls", 1, "max_rows", 20, "joins_allowed", false));
+    normalized.put("rules", Map.of("return_sql", false, "max_tool_calls", 1, "max_rows", 20, "joins_allowed", true));
     return ai.post("/api/schema/ingest", schema)
       .then(ai.post("/api/agent/decide", normalized))
       .flatMap(decision -> finishApiKeyDecision(client, decision, normalized));
@@ -154,7 +154,7 @@ class RagGatewayController {
     normalized.putIfAbsent("semantic_catalog", Map.of("client_name", identity(exchange).tenantId(), "schema_hash", "not-ingested"));
     normalized.putIfAbsent("external_tools", List.of(Map.of("name", "database_query")));
     normalized.putIfAbsent("local_tools", List.of(Map.of("name", "knowledge_search")));
-    normalized.putIfAbsent("rules", Map.of("return_sql", false, "max_tool_calls", 3, "max_rows", 100, "joins_allowed", false));
+    normalized.putIfAbsent("rules", Map.of("return_sql", false, "max_tool_calls", 3, "max_rows", 100, "joins_allowed", true));
     return normalized;
   }
 

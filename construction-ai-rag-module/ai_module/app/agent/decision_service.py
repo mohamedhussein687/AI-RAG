@@ -91,28 +91,12 @@ class DecisionService:
         resolved_value_followup = self._resolve_value_followup(request)
         if resolved_value_followup:
             return self._followup_value_decision(request, resolved_value_followup, arabic)
-        route = self.router.route(request.message, self._has_database_catalog(request))
-        if route.route == "conversational":
-            log.info(
-                "agent_decision route=conversational intent=%s selected_table=none operation=none normalized_message=%s reason=message_router",
-                route.intent,
-                self._normalize(request.message)[:300],
-            )
-            return validate_decision(FinalAnswerDecision(type="final_answer", answer=route.answer, display=Display(type="text", data={"conversation_type": route.intent}), sources=[]).model_dump())
-
         schema_context = await self._schema_context(request, understanding_message)
-        qwen_decision = await self._qwen_primary_decision(request, arabic, understanding_message, schema_context)
-        if qwen_decision is None and self._looks_like_database_request(understanding_message):
-            fallback = self._database_request_fallback(request, understanding_message, arabic, reason="empty_llm_response")
-            if fallback is not None:
-                return fallback
+        business_context = await self._business_context(request, understanding_message)
+        qwen_decision = await self._qwen_primary_decision(request, arabic, understanding_message, schema_context, business_context)
         if qwen_decision is not None:
             if isinstance(qwen_decision, dict) and qwen_decision.get(ROUTE_ONLY) in {"rag_search", "hybrid"}:
                 return await self._rag_decision(request, arabic, route=str(qwen_decision[ROUTE_ONLY]))
-            if self._is_bad_database_route(qwen_decision) and self._looks_like_database_request(understanding_message):
-                fallback = self._database_request_fallback(request, understanding_message, arabic, reason="qwen_unsupported")
-                if fallback is not None:
-                    return fallback
             return qwen_decision
 
         is_doc = any(term.lower() in text for term in DOC_TERMS)
@@ -208,9 +192,16 @@ class DecisionService:
                 ).model_dump()
             )
         if self._looks_like_database_request(request.message):
-            fallback = self._database_request_fallback(request, request.message, prefer_arabic(request.message, request.locale), reason=exc.__class__.__name__)
-            if fallback is not None:
-                return fallback
+            log.exception(
+                "agent_decision %s intent=qwen_planning_error deterministic_planner_disabled",
+                route_log_fields(
+                    request_id=request.conversation_id,
+                    normalized_message=normalized,
+                    route="unsupported",
+                    error_class=exc.__class__.__name__,
+                ),
+            )
+            return validate_decision(UnsupportedDecision(type="unsupported", answer="تعذر تشغيل محرك Qwen للتخطيط الآن، لذلك لم أنشئ خطة قاعدة بيانات بديلة.").model_dump())
         log.exception(
             "agent_decision %s intent=decision_pipeline_error",
             route_log_fields(
@@ -229,6 +220,27 @@ class DecisionService:
     async def _schema_context(self, request: AgentDecideRequest, understanding_message: str) -> list[dict[str, str]]:
         if not any(t.name == "database_query" for t in request.external_tools):
             return []
+        try:
+            search = RagSearchRequest(
+                query=understanding_message,
+                user_context=request.user_context,
+                top_k=8,
+                filters=RagFilters(document_types=["database_schema"], collection=self.settings.qdrant_schema_collection),
+            )
+            results = (await self.retrieval.search(search)).results
+            context = [
+                {
+                    "title": chunk.title,
+                    "source_type": chunk.source_type,
+                    "text": chunk.text[: self.settings.max_chunk_chars],
+                }
+                for chunk in results
+            ]
+            if context:
+                log.info("agent_decision schema_context chunks=%s tenant=%s source=qdrant", len(context), request.user_context.tenant_id)
+                return context
+        except Exception as exc:
+            log.warning("agent_decision schema_context qdrant unavailable error_class=%s", exc.__class__.__name__)
         try:
             client_name = str(request.semantic_catalog.get("client_name") or request.user_context.tenant_id)
             project_id = request.user_context.project_ids[0] if request.user_context.project_ids else None
@@ -251,13 +263,36 @@ class DecisionService:
                 }
                 for chunk in results
             ]
-            log.info("agent_decision schema_context chunks=%s tenant=%s project=%s", len(context), request.user_context.tenant_id, project_id)
+            log.info("agent_decision schema_context chunks=%s tenant=%s project=%s source=memory", len(context), request.user_context.tenant_id, project_id)
             return context
         except Exception as exc:
             log.warning("agent_decision schema_context unavailable error_class=%s", exc.__class__.__name__)
             return []
 
-    async def _qwen_primary_decision(self, request: AgentDecideRequest, arabic: bool, understanding_message: str, schema_context: list[dict[str, str]]):
+    async def _business_context(self, request: AgentDecideRequest, understanding_message: str) -> list[dict[str, str]]:
+        try:
+            search = RagSearchRequest(
+                query=understanding_message,
+                user_context=request.user_context,
+                top_k=min(8, self.settings.max_retrieved_chunks),
+                filters=RagFilters(document_types=["business_knowledge"], collection=self.settings.qdrant_business_collection),
+            )
+            results = (await self.retrieval.search(search)).results
+            context = [
+                {
+                    "title": chunk.title,
+                    "source_type": chunk.source_type,
+                    "text": chunk.text[: self.settings.max_chunk_chars],
+                }
+                for chunk in results
+            ]
+            log.info("agent_decision business_context chunks=%s tenant=%s", len(context), request.user_context.tenant_id)
+            return context
+        except Exception as exc:
+            log.warning("agent_decision business_context unavailable error_class=%s", exc.__class__.__name__)
+            return []
+
+    async def _qwen_primary_decision(self, request: AgentDecideRequest, arabic: bool, understanding_message: str, schema_context: list[dict[str, str]], business_context: list[dict[str, str]]):
         messages = [
             {
                 "role": "system",
@@ -272,13 +307,18 @@ class DecisionService:
                     "For ambiguous but answerable questions, return clarification with a helpful Arabic question. "
                     "For identity questions such as who are you, your name, or what project you work on, do not call tools. Return exactly "
                     '{"type":"final_answer","route":"conversational","answer":"أنا مساعد ORBIT AI، شغال على مشروع ORBIT، وأقدر أساعدك في قراءة وتحليل بيانات المشروع حسب الصلاحيات المتاحة.","display":{"type":"text","data":{}},"sources":[]}. '
-                    "Schema context documents describe allowed tables, columns, relationships, enum meanings, and whether a table is business, cms_content, or system. "
-                    "Operational business questions must use business tables from schema_context. "
+                    "You are the primary reasoning and query-planning engine. Do not rely on deterministic routing, aliases, or templates. "
+                    "Use retrieved_business_context for business rules, workflow meanings, status mappings, terminology, and Arabic domain language. "
+                    "Use retrieved_schema_context for tables, columns, relationships, foreign keys, enum meanings, and whether a table is business, cms_content, or system. "
+                    "Retrieve-grounded operational questions must produce a structured database_query plan when the context contains enough table and rule evidence. "
+                    "Operational business questions must use business tables from retrieved_schema_context. "
                     "Never use CMS/content/website tables such as about_us, pages, settings, banners, sliders, or web_* for operational business questions unless the user explicitly asks about website content. "
-                    "For filters, grouping, sorting, listing, or aggregates, use only columns present in schema_context. "
+                    "For filters, joins, grouping, sorting, listing, or aggregates, use only tables and columns present in retrieved_schema_context and value meanings from retrieved_business_context or schema comments. "
+                    "For multi-table questions, include joins as [{table,left_column,right_column,type}] where left_column is on the current table or previous join path and right_column is on the joined table. "
+                    "Never output raw SQL. Spring/Python executes SQL from the structured plan only after validation. "
                     "For a count, output this exact shape with the chosen table: "
                     '{"type":"tool_calls","tool_calls":[{"id":"db_1","tool":"database_query","plan":{"operation":"count","table":"logical_table","filters":[],"limit":20}}],"local_rag_results":[],"final_answer_instruction":"Answer in Arabic."}. '
-                    "For list/group/aggregate, use the same top-level shape and only add allowed plan fields from this set: column, filters, group_by, order_by, limit. "
+                    "For list/group/aggregate, use the same top-level shape and only add allowed plan fields from this set: table, columns, column, filters, joins, group_by, order_by, limit, entities. "
                     'If truly unsupported, output exactly {"type":"unsupported","route":"unsupported","answer":"لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."}. '
                     "Equivalent natural-language phrasings must produce the same plan."
                 ),
@@ -293,8 +333,10 @@ class DecisionService:
                         "max_rows": min(request.rules.max_rows, 20),
                         "client_name": request.semantic_catalog.get("client_name"),
                         "schema_hash": request.semantic_catalog.get("schema_hash"),
-                        "schema_context": schema_context,
-                        "legacy_semantic_catalog": request.semantic_catalog if not schema_context else {},
+                        "retrieved_business_context": business_context,
+                        "retrieved_schema_context": schema_context,
+                        "legacy_semantic_catalog": {},
+                        "conversation_history": [item.model_dump() for item in request.conversation_history[-6:]],
                         "previous_tool_results": request.tool_results[-3:],
                     },
                     ensure_ascii=False,
@@ -330,6 +372,8 @@ class DecisionService:
                 if isinstance(plan.get("order_by"), list):
                     order_by = plan.get("order_by")
                     plan["order_by"] = order_by[0] if order_by else None
+                if isinstance(plan.get("group_by"), str):
+                    plan["group_by"] = [plan["group_by"]]
                 if isinstance(plan.get("order_by"), dict) and "field" in plan["order_by"] and "column" not in plan["order_by"]:
                     plan["order_by"]["column"] = plan["order_by"].pop("field")
                 limit_value = plan.get("limit") or request.rules.max_rows

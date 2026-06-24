@@ -265,7 +265,7 @@ def test_chat_forbidden_sensitive_request_does_not_open_database(client, auth_he
     assert opened["database"] is False
 
 
-def test_chat_admin_question_schema_missing_is_database_setup_error(client, auth_headers, monkeypatch):
+def test_chat_admin_question_qwen_unsupported_does_not_use_deterministic_planner(client, auth_headers, monkeypatch):
     async def unsupported(self, messages):
         return {"type": "unsupported", "route": "unsupported", "answer": "لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."}
 
@@ -279,10 +279,9 @@ def test_chat_admin_question_schema_missing_is_database_setup_error(client, auth
 
     assert response.status_code == 200
     data = response.json()
-    assert data["route"] == "database_query"
-    assert data["requires_database"] is True
-    assert data["requires_context"] is True
-    assert "لم يتم تجهيز فهرس قاعدة البيانات بعد" in data["answer"]
+    assert data["route"] == "unsupported"
+    assert data["requires_database"] is False
+    assert data["executed_query_summary"] is None
 
 
 def test_smoke_chat_uses_private_module_chat(monkeypatch, capsys):

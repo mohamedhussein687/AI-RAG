@@ -1,6 +1,5 @@
 from .conftest import index_policy
 from app.clients.llm_client import LlmClient
-from app.agent.schema_planner import SchemaAwarePlanner
 
 
 def decide_payload(message, allowed=True, semantic_catalog=None, conversation_history=None):
@@ -197,15 +196,27 @@ def qwen_identity(*_args, **_kwargs):
 
 def qwen_project_plan_from_catalog(message_key="question"):
     async def fake_chat_json(self, messages):
-        payload = messages[1]["content"]
         import json
 
-        data = json.loads(payload)
-        plan = SchemaAwarePlanner().plan(data[message_key], data.get("legacy_semantic_catalog", {}), data.get("max_rows", 20))
-        if plan:
-            plan.pop("intent", None)
-            plan.pop("reason", None)
-        return plan or {"type": "unsupported", "route": "unsupported", "answer": "لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."}
+        data = json.loads(messages[1]["content"])
+        question = data[message_key].lower()
+        if "متأخر" in question and ("آخر" in data[message_key] or "اخر" in question or "تقرير" in question or "هات" in question or "التسليم" in question):
+            return {"type": "tool_calls", "route": "database_query", "tool_calls": [{"id": "db_1", "tool": "database_query", "plan": {"intent": "delayed_projects_report", "operation": "select", "table": "projects", "filters": [{"column": "planned_delivery_date", "operator": "lt", "value": "today"}, {"column": "is_finished", "operator": "not_completed", "value": False}], "order_by": {"column": "updated_at", "direction": "desc"}, "limit": 4}}]}
+        if "متأخر" in question:
+            return {"type": "tool_calls", "route": "database_query", "tool_calls": [{"id": "db_1", "tool": "database_query", "plan": {"intent": "delayed_projects_count", "operation": "count", "table": "projects", "filters": [{"column": "planned_delivery_date", "operator": "lt", "value": "today"}, {"column": "is_finished", "operator": "not_completed", "value": False}], "limit": 20}}]}
+        if "عدد المشاريع" in question or "how many projects" in question:
+            return {"type": "tool_calls", "route": "database_query", "tool_calls": [{"id": "db_1", "tool": "database_query", "plan": {"operation": "count", "table": "projects", "filters": [], "limit": 20}}]}
+        if "المشاريع النشطة" in question:
+            return {"type": "tool_calls", "route": "database_query", "tool_calls": [{"id": "db_1", "tool": "database_query", "plan": {"intent": "project_status_list", "operation": "select", "table": "projects", "filters": [{"column": "status", "operator": "eq", "value": "active"}], "limit": 20}}]}
+        if "c832" in question:
+            return {"type": "tool_calls", "route": "database_query", "tool_calls": [{"id": "db_1", "tool": "database_query", "plan": {"intent": "project_details", "operation": "details", "table": "projects", "filters": [{"column": "project_code", "operator": "code_equals_normalized", "value": "c832-p2-06-2026"}], "limit": 1}}]}
+        if "test60" in question:
+            return {"type": "tool_calls", "route": "database_query", "tool_calls": [{"id": "db_1", "tool": "database_query", "plan": {"intent": "project_details", "operation": "details", "table": "projects", "lookup_value": "test60", "lookup_fields": ["title", "project_code", "project_serial"], "limit": 1}}]}
+        if "اخر مشروع" in question or "آخر مشروع" in data[message_key] or "latest project" in question:
+            return {"type": "tool_calls", "route": "database_query", "tool_calls": [{"id": "db_1", "tool": "database_query", "plan": {"intent": "latest_project", "operation": "select", "table": "projects", "filters": [], "order_by": {"column": "created_at", "direction": "desc"}, "limit": 1}}]}
+        if "المستخدم ayman ibrahim el sayed" in question:
+            return {"type": "tool_calls", "route": "database_query", "tool_calls": [{"id": "db_1", "tool": "database_query", "plan": {"intent": "user_details", "entities": ["users"], "operation": "select", "table": "users", "columns": ["name", "email", "type"], "filters": [{"column": "name", "operator": "contains", "value": "ayman ibrahim el sayed"}], "limit": 1}}]}
+        return {"type": "unsupported", "route": "unsupported", "answer": "لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."}
 
     return fake_chat_json
 
@@ -243,6 +254,7 @@ def test_small_talk_question_is_qwen_final_answer_without_database_query(client,
     async def fake_chat_json(self, messages):
         return {
             "type": "final_answer",
+            "route": "conversational",
             "answer": "أنا بخير، جاهز أساعدك في بيانات مشروع ORBIT.",
             "display": {"type": "text", "data": {}},
             "sources": [],
@@ -411,16 +423,19 @@ def test_project_details_by_code_handles_arabic_typo_and_spaced_code(client, aut
         assert plan["filters"] == [{"column": "project_code", "operator": "code_equals_normalized", "value": "c832-p2-06-2026"}]
 
 
-def test_project_details_by_code_without_code_field_returns_structured_error(client, auth_headers, monkeypatch):
-    monkeypatch.setattr(LlmClient, "chat_json", qwen_project_plan_from_catalog())
+def test_project_details_by_code_without_code_field_returns_qwen_unsupported(client, auth_headers, monkeypatch):
+    async def unsupported(self, messages):
+        return {"type": "unsupported", "route": "unsupported", "answer": "لا يوجد حقل كود مناسب في السياق المسترجع."}
+
+    monkeypatch.setattr(LlmClient, "chat_json", unsupported)
     catalog = project_catalog_with_cms_table()
     catalog["domain_entities"][0]["project_details"]["code_fields"] = []
     response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("تفاصيل مشروع بالكود C832-P2-06-2026", semantic_catalog=catalog))
     assert response.status_code == 200
     data = response.json()
-    assert data["type"] == "final_answer"
-    assert data["route"] == "database_query"
-    assert data["requires_database"] is True
+    assert data["type"] == "unsupported"
+    assert data["route"] == "unsupported"
+    assert data["requires_database"] is False
     assert "لا يوجد حقل كود" in data["answer"]
 
 
@@ -447,8 +462,11 @@ def test_latest_project_questions_use_projects_created_at_not_about_us(client, a
         assert plan["limit"] == 1
 
 
-def test_latest_project_missing_mapping_returns_structured_unsupported_not_500(client, auth_headers, monkeypatch):
-    monkeypatch.setattr(LlmClient, "chat_json", qwen_project_plan_from_catalog())
+def test_latest_project_missing_mapping_returns_qwen_unsupported_not_500(client, auth_headers, monkeypatch):
+    async def unsupported(self, messages):
+        return {"type": "unsupported", "route": "unsupported", "answer": "لا يوجد حقل مناسب لترتيب آخر مشروع في السياق المسترجع."}
+
+    monkeypatch.setattr(LlmClient, "chat_json", unsupported)
     catalog = project_catalog_with_cms_table()
     catalog["domain_entities"][0]["latest_project"] = {"enabled": False, "missing_fields": ["created_at_or_sequential_id"]}
     response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("ما هو اخر مشروع تم اضافتة", semantic_catalog=catalog))
@@ -458,16 +476,19 @@ def test_latest_project_missing_mapping_returns_structured_unsupported_not_500(c
     assert "لا يوجد حقل مناسب" in data["answer"]
 
 
-def test_delayed_projects_missing_mapping_returns_configuration_error(client, auth_headers, monkeypatch):
-    monkeypatch.setattr(LlmClient, "chat_json", qwen_project_plan_from_catalog())
+def test_delayed_projects_missing_mapping_returns_qwen_unsupported(client, auth_headers, monkeypatch):
+    async def unsupported(self, messages):
+        return {"type": "unsupported", "route": "unsupported", "answer": "لا توجد حقول التأخير المطلوبة في السياق المسترجع."}
+
+    monkeypatch.setattr(LlmClient, "chat_json", unsupported)
     catalog = project_catalog_with_cms_table()
     catalog["domain_entities"][0]["delayed_projects_report"] = {"enabled": False, "missing_fields": ["planned_delivery_date", "is_finished"]}
     response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("كم عدد المشاريع المتأخرة", semantic_catalog=catalog))
     assert response.status_code == 200
     data = response.json()
-    assert data["type"] == "final_answer"
-    assert data["route"] == "database_query"
-    assert data["requires_database"] is True
+    assert data["type"] == "unsupported"
+    assert data["route"] == "unsupported"
+    assert data["requires_database"] is False
     assert "حقول التأخير" in data["answer"]
 
 
@@ -595,7 +616,7 @@ def test_qwen_classifies_required_natural_messages_without_early_unsupported(cli
         assert data["type"] != "unsupported"
 
 
-def test_database_entity_request_is_recovered_when_qwen_misroutes_conversational(client, auth_headers, monkeypatch):
+def test_database_entity_request_is_not_recovered_when_qwen_misroutes_conversational(client, auth_headers, monkeypatch):
     async def misrouted_conversational(self, messages):
         return {
             "type": "final_answer",
@@ -609,9 +630,9 @@ def test_database_entity_request_is_recovered_when_qwen_misroutes_conversational
     response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("اعرض جميع اسماء العملاء", semantic_catalog=client_catalog()))
     assert response.status_code == 200
     data = response.json()
-    assert data["route"] == "database_query"
-    assert data["requires_database"] is True
-    assert data["type"] == "tool_calls"
+    assert data["route"] == "conversational"
+    assert data["requires_database"] is False
+    assert data["type"] == "final_answer"
 
 
 def test_user_name_request_uses_qwen_plan_not_backend_aliases(client, auth_headers, monkeypatch):
@@ -669,7 +690,7 @@ def test_user_details_request_maps_to_canonical_users_table(client, auth_headers
     assert "type" in plan["columns"]
 
 
-def test_user_details_request_uses_schema_fallback_when_qwen_says_unsupported(client, auth_headers, monkeypatch):
+def test_user_details_request_stays_unsupported_when_qwen_says_unsupported(client, auth_headers, monkeypatch):
     async def unsupported(self, messages):
         return {"type": "unsupported", "route": "unsupported", "answer": "لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."}
 
@@ -677,15 +698,12 @@ def test_user_details_request_uses_schema_fallback_when_qwen_says_unsupported(cl
     response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("اريد بيانات المستخدم Ayman Ibrahim El Sayed", semantic_catalog=user_catalog()))
     assert response.status_code == 200
     data = response.json()
-    assert data["type"] == "tool_calls"
-    assert data["route"] == "database_query"
-    assert data["requires_database"] is True
-    plan = data["tool_calls"][0]["plan"]
-    assert plan["table"] == "users"
-    assert plan["operation"] == "select"
+    assert data["type"] == "unsupported"
+    assert data["route"] == "unsupported"
+    assert data["requires_database"] is False
 
 
-def test_admin_question_routes_database_query_when_qwen_says_unsupported(client, auth_headers, monkeypatch):
+def test_admin_question_stays_unsupported_when_qwen_says_unsupported(client, auth_headers, monkeypatch):
     async def unsupported(self, messages):
         return {"type": "unsupported", "route": "unsupported", "answer": "لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."}
 
@@ -693,18 +711,12 @@ def test_admin_question_routes_database_query_when_qwen_says_unsupported(client,
     response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("من الادمن في هذا النظام", semantic_catalog=admin_catalog()))
     assert response.status_code == 200
     data = response.json()
-    assert data["type"] == "tool_calls"
-    assert data["route"] == "database_query"
-    assert data["requires_database"] is True
-    plan = data["tool_calls"][0]["plan"]
-    assert plan["intent"] == "find_admin_users"
-    assert plan["table"] == "users"
-    assert plan["operation"] == "select"
-    assert plan["filters"]
-    assert "name" in plan["columns"]
+    assert data["type"] == "unsupported"
+    assert data["route"] == "unsupported"
+    assert data["requires_database"] is False
 
 
-def test_admin_synonyms_route_database_query(client, auth_headers, monkeypatch):
+def test_admin_synonyms_stay_unsupported_when_qwen_says_unsupported(client, auth_headers, monkeypatch):
     async def unsupported(self, messages):
         return {"type": "unsupported", "route": "unsupported", "answer": "لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."}
 
@@ -713,12 +725,12 @@ def test_admin_synonyms_route_database_query(client, auth_headers, monkeypatch):
         response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload(message, semantic_catalog=admin_catalog()))
         assert response.status_code == 200
         data = response.json()
-        assert data["route"] == "database_query"
-        assert data["requires_database"] is True
-        assert data["type"] == "tool_calls"
+        assert data["route"] == "unsupported"
+        assert data["requires_database"] is False
+        assert data["type"] == "unsupported"
 
 
-def test_admin_question_schema_missing_returns_setup_error_not_unsupported(client, auth_headers, monkeypatch):
+def test_admin_question_schema_missing_returns_qwen_unsupported(client, auth_headers, monkeypatch):
     async def unsupported(self, messages):
         return {"type": "unsupported", "route": "unsupported", "answer": "لا أستطيع تنفيذ هذا الطلب من البيانات المتاحة."}
 
@@ -726,11 +738,9 @@ def test_admin_question_schema_missing_returns_setup_error_not_unsupported(clien
     response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("من الادمن في هذا النظام", semantic_catalog={}))
     assert response.status_code == 200
     data = response.json()
-    assert data["type"] == "final_answer"
-    assert data["route"] == "database_query"
-    assert data["requires_database"] is True
-    assert data["requires_context"] is True
-    assert "لم يتم تجهيز فهرس قاعدة البيانات بعد" in data["answer"]
+    assert data["type"] == "unsupported"
+    assert data["route"] == "unsupported"
+    assert data["requires_database"] is False
 
 
 def test_llm_user_table_alias_is_not_business_normalized_by_ai_module(client, auth_headers, monkeypatch):
@@ -1027,9 +1037,9 @@ def test_service_failure_fallback_only_answers_obvious_conversation(client, auth
 
     database = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("اعرض جميع اسماء العملاء", semantic_catalog=client_catalog()))
     assert database.status_code == 200
-    assert database.json()["type"] == "tool_calls"
-    assert database.json()["route"] == "database_query"
-    assert database.json()["requires_database"] is True
+    assert database.json()["type"] == "unsupported"
+    assert database.json()["route"] == "unsupported"
+    assert database.json()["requires_database"] is False
 
 
 def test_no_raw_sql_can_appear_in_agent_decisions(client, auth_headers):
@@ -1064,12 +1074,8 @@ def test_normal_inputs_never_return_500_when_planner_raises(client, auth_headers
         response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload(message, semantic_catalog=invoice_catalog()))
         assert response.status_code == 200
         data = response.json()
-        if "فاتورة" in message:
-            assert data["route"] == "database_query"
-            assert data["requires_database"] is True
-        else:
-            assert data["type"] == "unsupported"
-            assert data["route"] == "unsupported"
+        assert data["type"] == "unsupported"
+        assert data["route"] == "unsupported"
         assert "answer" in data
 
 
@@ -1081,6 +1087,6 @@ def test_invalid_llm_output_returns_valid_json_database_setup_error_for_database
     response = client.post("/api/agent/decide", headers=auth_headers, json=decide_payload("كم فاتورة موجودة؟", semantic_catalog=invoice_catalog()))
     assert response.status_code == 200
     data = response.json()
-    assert data["type"] == "final_answer"
-    assert data["route"] == "database_query"
-    assert data["requires_database"] is True
+    assert data["type"] == "unsupported"
+    assert data["route"] == "unsupported"
+    assert data["requires_database"] is False

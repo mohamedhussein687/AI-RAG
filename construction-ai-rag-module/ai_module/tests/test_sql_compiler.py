@@ -19,6 +19,17 @@ def snapshot() -> SchemaSnapshot:
                     SchemaColumn(name="created_at", data_type="datetime"),
                 ],
                 primary_key_columns=["id"],
+            ),
+            SchemaTable(
+                name="invoices",
+                classification="business",
+                columns=[
+                    SchemaColumn(name="id", data_type="int", is_primary_key=True),
+                    SchemaColumn(name="project_id", data_type="int"),
+                    SchemaColumn(name="total", data_type="decimal"),
+                    SchemaColumn(name="paid", data_type="tinyint"),
+                ],
+                primary_key_columns=["id"],
             )
         ],
     )
@@ -72,3 +83,23 @@ def test_compile_like_wraps_value_without_string_interpolation() -> None:
 
     assert "`name` LIKE %s" in compiled.sql
     assert compiled.parameters == ["%test60%", 5]
+
+
+def test_compile_join_plan_qualifies_joined_columns() -> None:
+    plan = StructuredQueryPlan(
+        route="database_query",
+        operation="select",
+        resolved_tables=["projects"],
+        joins=[{"table": "invoices", "left_column": "id", "right_column": "project_id", "type": "left"}],
+        columns=["projects.name", "invoices.total"],
+        filters=[{"column": "invoices.paid", "operator": "=", "value": 1}],
+        limit=10,
+    )
+    validated = validate_plan(plan, snapshot())
+
+    compiled = compile_select(validated)
+
+    assert "LEFT JOIN `invoices` ON `projects`.`id` = `invoices`.`project_id`" in compiled.sql
+    assert "`projects`.`name` AS `projects__name`" in compiled.sql
+    assert "`invoices`.`total` AS `invoices__total`" in compiled.sql
+    assert compiled.parameters == [1, 10]
